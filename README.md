@@ -141,7 +141,7 @@ ppl = torch.exp(
 
 
 
-### Training and reproducing the benchmark resulst
+### Training and reproducing the benchmark results
 
 We provide a training in `training/train.py`.
 
