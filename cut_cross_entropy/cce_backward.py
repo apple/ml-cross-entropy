@@ -249,7 +249,7 @@ _cce_backward_kernel = triton.heuristics(
         "GROUP_B": lambda args: 8,
     }
 )(_cce_backward_kernel)
-_cce_backward_kernel = cce_backward_autotune(_cce_backward_kernel)
+_cce_backward_kernel = cce_backward_autotune()(_cce_backward_kernel)
 
 
 def cce_backward_kernel(
