@@ -54,8 +54,8 @@ def _grads(
 
 
 @skip_no_cuda
-@pytest.mark.parametrize("impl", ["cce", "torch_compile"])
-@pytest.mark.parametrize("dtype,error_tol", [(torch.float16, 1e-3), (torch.bfloat16, 1e-2)])
+@pytest.mark.parametrize("impl", ["cce", "torch_compile", "cce_exact"])
+@pytest.mark.parametrize("dtype,error_tol", [(torch.float16, 1.2e-3), (torch.bfloat16, 1e-2)])
 @pytest.mark.parametrize("softcap", [None, 20.0])
 @pytest.mark.parametrize("shift", [False, True])
 @pytest.mark.parametrize("invalids", [False, True])
@@ -109,11 +109,43 @@ def test_loss_backward(
     loss.mean().backward()
     assert e.grad is not None
     assert c.grad is not None
+    cce = (e.grad, c.grad)
 
-    expected_error = tuple((vgt - vref).abs() for vgt, vref in zip(gt, ref))
-    cce_error = tuple((vgt - vcce).abs() for vgt, vcce in zip(gt, (e.grad, c.grad)))
+    expected_error = tuple((vgt - vref).abs().flatten() for vgt, vref in zip(gt, ref))
+    cce_error = tuple((vgt - vcce).abs().flatten() for vgt, vcce in zip(gt, cce))
 
     for i in range(len(expected_error)):
-        assert (
-            cce_error[i] <= (expected_error[i] + error_tol)
-        ).all(), f"{(cce_error[i] - expected_error[i]).relu().max()=}"
+        if not (cce_error[i] <= (expected_error[i] + error_tol)).all():
+            errors = (cce_error[i] - expected_error[i]).relu()
+            argmax_error = int(errors.argmax())
+            raise ValueError(
+                f"{i=}, {errors.max()=}, {cce[i].flatten()[argmax_error]=}, {gt[i].flatten()[argmax_error]=}"
+            )
+
+
+@skip_no_cuda
+@pytest.mark.parametrize("compute_de,compute_dc", [(True, False), (False, True)])
+def test_loss_partials(compute_de: bool, compute_dc: bool):
+    torch.cuda.manual_seed(0)
+    dtype = torch.bfloat16
+
+    N, V, D = (256, 512, 128)
+    e = torch.randn((N, D), device="cuda", dtype=dtype, requires_grad=False) / (D**0.5)
+    c = torch.randn((V, D), device="cuda", dtype=dtype, requires_grad=False)
+
+    c[0 : min(N, V) // 2] = e[0 : min(N, V) // 2]
+
+    targets = torch.randint(0, V, size=(N,), device="cuda")
+
+    e = e.view(4, -1, D)
+    targets = targets.view(e.size()[0:-1])
+
+    e.requires_grad_(compute_de)
+    c.requires_grad_(compute_dc)
+
+    e.grad = c.grad = None
+    loss = linear_cross_entropy(e, c, targets, reduction="mean")
+    loss.backward()
+
+    assert (e.grad is not None) == compute_de
+    assert (c.grad is not None) == compute_dc

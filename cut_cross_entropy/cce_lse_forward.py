@@ -34,6 +34,7 @@ def _cce_lse_forward_kernel(
     B,
     V,
     D,
+    BMax,
     stride_eb,
     stride_ed,
     stride_cv,
@@ -63,46 +64,52 @@ def _cce_lse_forward_kernel(
     pid_b = first_pid_b + ((pid % num_pid_in_group) % group_size_b)
     pid_v = (pid % num_pid_in_group) // group_size_b
 
-    offs_b = (pid_b * BLOCK_B + tl.arange(0, BLOCK_B)) % B
+    offs_b = pid_b * BLOCK_B + tl.arange(0, BLOCK_B)
     if HAS_VALIDS:
-        offs_b = tl.load(Valids + stride_vb * offs_b)
+        offs_b = tl.load(Valids + stride_vb * offs_b, mask=offs_b < B, other=BMax)
 
-    offs_v = (pid_v * BLOCK_V + tl.arange(0, BLOCK_V)) % V
+    offs_v = pid_v * BLOCK_V + tl.arange(0, BLOCK_V)
     offs_d = tl.arange(0, BLOCK_D)
     e_ptrs = E + (offs_b[:, None] * stride_eb + offs_d[None, :] * stride_ed)
     c_ptrs = C + (offs_v[None, :] * stride_cv + offs_d[:, None] * stride_cd)
 
     accum = tl.zeros((BLOCK_B, BLOCK_V), dtype=tl.float32)
     for d in range(0, tl.cdiv(D, BLOCK_D)):
-        # Load the next block of A and B, generate a mask by checking the K dimension.
-        # If it is out of bounds, set it to 0.
-        if EVEN_D:
-            e = tl.load(e_ptrs)
-            c = tl.load(c_ptrs)
-        else:
-            e = tl.load(e_ptrs, mask=offs_d[None, :] < D - d * BLOCK_D, other=0.0)
-            c = tl.load(c_ptrs, mask=offs_d[:, None] < D - d * BLOCK_D, other=0.0)
+        e_mask = offs_b[:, None] < BMax
+        if not EVEN_D:
+            e_mask = e_mask & (offs_d[None, :] < (D - d * BLOCK_D))
+
+        e = tl.load(e_ptrs, mask=e_mask, other=0.0)
+
+        c_mask = offs_v[None, :] < V
+        if not EVEN_D:
+            c_mask = c_mask & (offs_d[:, None] < (D - d * BLOCK_D))
+
+        c = tl.load(c_ptrs, mask=c_mask, other=0.0)
+
         accum = tl.dot(e, c, accum, input_precision=DOT_PRECISION)
+
         e_ptrs += BLOCK_D * stride_ed
         c_ptrs += BLOCK_D * stride_cd
 
-    v_mask = (pid_v * BLOCK_V + tl.arange(0, BLOCK_V)) < V
-    logits = tl.where(v_mask[None, :], accum, -float("inf"))
+    tl.debug_barrier()
+
+    logits = tl.where(offs_v[None, :] < V, accum, -float("inf"))
     if HAS_SOFTCAP:
         logits = tl_softcapping(logits, softcap)
 
-    off_b = pid_b * BLOCK_B + tl.arange(0, BLOCK_B)
-    o_mask = off_b < B
+    offs_b = pid_b * BLOCK_B + tl.arange(0, BLOCK_B)
+    o_mask = offs_b < B
     if HAS_LA:
         logits = tl.where(o_mask[:, None], logits, 0.0)
         this_avg_logit = tl.sum(logits, 0) / B
-        tl.atomic_add(LA + offs_v, this_avg_logit, mask=v_mask)
+        tl.atomic_add(LA + offs_v, this_avg_logit, mask=offs_v < V)
 
     this_mx = tl.max(logits, axis=1)
     e = tl.exp(logits - this_mx[:, None])
     this_lse = this_mx + tl.log(tl.sum(e, axis=1))
 
-    lse_ptrs = LSE + (stride_lse_b * off_b)
+    lse_ptrs = LSE + (stride_lse_b * offs_b)
 
     this_locks = Locks + (pid_b // tl.cdiv(B, BLOCK_B * num_locks))
     while tl.atomic_cas(this_locks, 0, 1) == 1:
@@ -112,6 +119,7 @@ def _cce_lse_forward_kernel(
     lse = tl_logaddexp(lse, this_lse)
     tl.store(lse_ptrs, lse, mask=o_mask, eviction_policy="evict_last")
 
+    tl.debug_barrier()
     tl.atomic_xchg(this_locks, 0)
 
 
@@ -190,6 +198,7 @@ def cce_lse_forward_kernel(
         B,
         V,
         D,  #
+        e.size(0),
         e.stride(0),
         e.stride(1),  #
         c.stride(0),

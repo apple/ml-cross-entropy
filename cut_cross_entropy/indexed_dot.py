@@ -25,6 +25,8 @@ def _indexed_neg_dot_forward_kernel(
     Out,
     B,
     D,
+    V,
+    BMax,
     stride_eb,
     stride_ed,
     stride_cv,
@@ -49,28 +51,33 @@ def _indexed_neg_dot_forward_kernel(
     pid_b = first_pid_b + ((pid % num_d_in_group) % group_size_b)
     pid_d = (pid % num_d_in_group) // group_size_b
 
-    offs_b = (tl.arange(0, BLOCK_B) + pid_b * BLOCK_B) % B
+    offs_b = tl.arange(0, BLOCK_B) + pid_b * BLOCK_B
     if HAS_VALIDS:
-        offs_b = tl.load(Valids + stride_vb * offs_b)
+        offs_b = tl.load(Valids + stride_vb * offs_b, mask=offs_b < B, other=BMax)
 
     offs_d = tl.arange(0, BLOCK_D) + pid_d * BLOCK_D
     e_ptrs = E + (stride_eb * offs_b[:, None] + stride_ed * offs_d[None, :])
-    if EVEN_D:
-        e = tl.load(e_ptrs)
-    else:
-        e = tl.load(e_ptrs, mask=offs_d[None, :] < D, other=0.0)
 
-    inds = tl.load(Inds + stride_ib * ((offs_b + 1) if SHIFT else offs_b))
+    e_mask = offs_b[:, None] < BMax
+    if not EVEN_D:
+        e_mask = e_mask & (offs_d[None, :] < D)
+
+    e = tl.load(e_ptrs, mask=e_mask, other=0.0)
+
+    offs_b = (offs_b + 1) if SHIFT else offs_b
+    inds = tl.load(Inds + stride_ib * offs_b, mask=offs_b < BMax, other=V)
 
     c_ptrs = C + (inds[:, None] * stride_cv + offs_d[None, :] * stride_cd)
-    if EVEN_D:
-        c = tl.load(c_ptrs)
-    else:
-        c = tl.load(c_ptrs, mask=offs_d[None, :] < D, other=0.0)
+
+    c_mask = inds[:, None] < V
+    if not EVEN_D:
+        c_mask = c_mask & (offs_d[None, :] < D)
+
+    c = tl.load(c_ptrs, mask=c_mask, other=0.0)
 
     offs_b = tl.arange(0, BLOCK_B) + pid_b * BLOCK_B
     out_ptrs = Out + offs_b
-    dot = (e * c).to(tl.float32)
+    dot = e.to(tl.float32) * c.to(tl.float32)
     neg_dot = -tl.sum(dot, 1).to(out_ptrs.dtype.element_ty)
     tl.atomic_add(out_ptrs, neg_dot, mask=offs_b < B)
 
@@ -109,6 +116,8 @@ def indexed_neg_dot_forward_kernel(
         out,
         B,
         e.size(1),
+        c.size(0),
+        e.size(0),
         e.stride(0),
         e.stride(1),
         c.stride(0),

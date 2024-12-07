@@ -15,7 +15,10 @@ skip_no_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="Test re
 @pytest.mark.parametrize("softcap", [None, 20.0])
 @pytest.mark.parametrize("shape", [(256, 512, 128), (255, 507, 128), (255, 507, 123)])
 def test_indexed_dot(
-    dtype: torch.dtype, error_tol: float, softcap: float | None, shape: tuple[int, int, int]
+    dtype: torch.dtype,
+    error_tol: float,
+    softcap: float | None,
+    shape: tuple[int, int, int],
 ):
     torch.cuda.manual_seed(0)
 

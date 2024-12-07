@@ -8,6 +8,7 @@ from cut_cross_entropy.tl_utils import (
     b_bin_fn,
     tl_and_reduce_fn,
     tl_lock_add,
+    tl_lock_kahan_sum,
     tl_softcapping,
     tl_softcapping_grad,
 )
@@ -17,6 +18,7 @@ from cut_cross_entropy.tl_utils import (
 def _mm_backward(
     do,
     da_ptrs,
+    dac_ptrs,
     partial_mask_a,
     da_lock_ptr,
     n_locks,
@@ -27,11 +29,14 @@ def _mm_backward(
     D,
     BLOCK_D: tl.constexpr,
     EVEN_D: tl.constexpr,
+    USE_KAHAN: tl.constexpr,
 ):
     d_inds = tl.arange(0, BLOCK_D)[None, :]
 
-    da_ptrs = da_ptrs + d_inds * stride_ad
     b_ptrs = b_ptrs + d_inds * stride_bd
+    da_ptrs = da_ptrs + d_inds * stride_ad
+    if USE_KAHAN:
+        dac_ptrs = dac_ptrs + d_inds + stride_ad
 
     for d in range(0, tl.cdiv(D, BLOCK_D)):
         if EVEN_D:
@@ -51,10 +56,15 @@ def _mm_backward(
         lock_offset = d // tl.cdiv(D, BLOCK_D * n_locks)
         this_da_lock_ptr = da_lock_ptr + lock_offset
 
-        tl_lock_add(da_ptrs, da_i, mask, this_da_lock_ptr)
+        if USE_KAHAN:
+            tl_lock_kahan_sum(da_ptrs, dac_ptrs, da_i, mask, this_da_lock_ptr)
+        else:
+            tl_lock_add(da_ptrs, da_i, mask, this_da_lock_ptr)
 
         b_ptrs += BLOCK_D * stride_bd
         da_ptrs += BLOCK_D * stride_ad
+        if USE_KAHAN:
+            dac_ptrs += BLOCK_D * stride_ad
 
 
 @triton.jit
@@ -75,6 +85,8 @@ def _block_is_filtered(check_val: tl.tensor, filter_eps: tl.tensor) -> tl.tensor
         "HAS_SOFTCAP": lambda args: args["softcap"] is not None,
         "ITEM_DO": lambda args: args["dOut"].numel() == 1,
         "GROUP_B": lambda args: 8,
+        "COMPUTE_DC": lambda args: args["dC"] is not None,
+        "COMPUTE_DE": lambda args: args["dE"] is not None,
     }
 )
 @triton.jit
@@ -89,12 +101,15 @@ def _cce_backward_kernel(
     softcap,
     Targets,
     dE,
+    dEC,
     dELocks,
     dC,
+    dCC,
     dCLocks,
     B,
     D,
     V,
+    BMax,
     n_de_locks_0,
     n_de_locks_1,
     n_dc_locks_0,
@@ -120,6 +135,9 @@ def _cce_backward_kernel(
     HAS_TARGETS: tl.constexpr,
     HAS_SOFTCAP: tl.constexpr,
     SHIFT: tl.constexpr,
+    USE_KAHAN: tl.constexpr,
+    COMPUTE_DC: tl.constexpr,
+    COMPUTE_DE: tl.constexpr,
 ):
     pid = tl.program_id(axis=0)
     num_b_chunks = tl.cdiv(B, BLOCK_B)
@@ -131,13 +149,13 @@ def _cce_backward_kernel(
     pid_b = first_pid_b + ((pid % num_v_in_group) % group_size_b)
     pid_v = (pid % num_v_in_group) // group_size_b
 
-    offs_b = (pid_b * BLOCK_B + tl.arange(0, BLOCK_B)) % B
+    offs_b = pid_b * BLOCK_B + tl.arange(0, BLOCK_B)
     if HAS_VALIDS:
-        offs_b = tl.load(Valids + stride_vb * offs_b)
+        offs_b = tl.load(Valids + stride_vb * offs_b, mask=offs_b < B, other=BMax)
 
-    offs_v = (pid_v * BLOCK_V + tl.arange(0, BLOCK_V)) % V
+    offs_v = pid_v * BLOCK_V + tl.arange(0, BLOCK_V)
     if HAS_VOCAB_ORDERING:
-        offs_v = tl.load(VocabOrdering + offs_v)
+        offs_v = tl.load(VocabOrdering + offs_v, mask=offs_v < V, other=V)
 
     offs_d = tl.arange(0, BLOCK_D)
     e_ptrs = E + (offs_b[:, None] * stride_eb + offs_d[None, :] * stride_ed)
@@ -145,39 +163,45 @@ def _cce_backward_kernel(
 
     accum = tl.zeros((BLOCK_B, BLOCK_V), dtype=tl.float32)
     for d in range(0, tl.cdiv(D, BLOCK_D)):
-        if EVEN_D:
-            e = tl.load(e_ptrs)
-            c = tl.load(c_ptrs)
-        else:
-            e = tl.load(e_ptrs, mask=offs_d[None, :] < D - d * BLOCK_D, other=0.0)
-            c = tl.load(c_ptrs, mask=offs_d[:, None] < D - d * BLOCK_D, other=0.0)
+        e_mask = offs_b[:, None] < BMax
+        if not EVEN_D:
+            e_mask = e_mask & (offs_d[None, :] < (D - d * BLOCK_D))
+
+        e = tl.load(e_ptrs, mask=e_mask, other=0.0)
+
+        c_mask = offs_v[None, :] < V
+        if not EVEN_D:
+            c_mask = c_mask & (offs_d[:, None] < (D - d * BLOCK_D))
+
+        c = tl.load(c_ptrs, mask=c_mask, other=0.0)
 
         accum = tl.dot(e, c, accum)
 
         e_ptrs += BLOCK_D * stride_ed
         c_ptrs += BLOCK_D * stride_cd
 
+    tl.debug_barrier()
+
     if HAS_SOFTCAP:
         accum = tl_softcapping(accum, softcap)
 
     if HAS_VALIDS:
-        lse = tl.load(LSE + (pid_b * BLOCK_B + tl.arange(0, BLOCK_B)) % B)
+        direct_offs_b = pid_b * BLOCK_B + tl.arange(0, BLOCK_B)
+        lse = tl.load(LSE + direct_offs_b, mask=direct_offs_b < B, other=float("inf"))
     else:
-        lse = tl.load(LSE + offs_b)
+        lse = tl.load(LSE + offs_b, mask=offs_b < B, other=float("inf"))
 
     d_accum = tl.exp(accum - lse[:, None])
 
+    d_accum = tl.where(offs_v[:, None] < V, d_accum, 0.0)
+
     if HAS_TARGETS:
-        targets = tl.load(Targets + ((offs_b + 1) if SHIFT else offs_b))
+        target_offs_b = (offs_b + 1) if SHIFT else offs_b
+        targets = tl.load(Targets + target_offs_b, mask=target_offs_b < BMax, other=V + 1)
         is_target = targets[:, None] == offs_v[None, :]
-        d_accum += tl.where(is_target, -1.0, 0.0)
+        d_accum = tl.where(is_target, d_accum - 1.0, d_accum)
     else:
         is_target = None
-
-    accum_valid_mask = ((pid_b * BLOCK_B + tl.arange(0, BLOCK_B))[:, None] < B) & (
-        (pid_v * BLOCK_V + tl.arange(0, BLOCK_V))[None, :] < V
-    )
-    d_accum = tl.where(accum_valid_mask, d_accum, 0.0)
 
     if FILTER_GRAD:
         if _block_is_filtered(tl.abs(d_accum), filter_eps):
@@ -189,50 +213,64 @@ def _cce_backward_kernel(
     if ITEM_DO:
         d_out = tl.load(dOut)
     else:
-        d_out = tl.load(dOut + ((offs_b + 1) if SHIFT else offs_b))[:, None]
+        d_out_offs_b = (offs_b + 1) if SHIFT else offs_b
+        d_out = tl.load(dOut + d_out_offs_b, mask=d_out_offs_b < BMax, other=0.0)[:, None]
 
     d_out = grad_scale * d_out
 
     d_accum = (d_accum * d_out).to(e_ptrs.dtype.element_ty)
 
-    b_mask = (pid_b * BLOCK_B + tl.arange(0, BLOCK_B)[:, None]) < B
-    v_mask = (pid_v * BLOCK_V + tl.arange(0, BLOCK_V)[:, None]) < V
+    if COMPUTE_DE:
+        lock_offset = (pid_b // tl.cdiv(B, BLOCK_B * n_de_locks_0)) * n_de_locks_1
+        dELocks += lock_offset
 
-    lock_offset = (pid_b // tl.cdiv(B, BLOCK_B * n_de_locks_0)) * n_de_locks_1
-    dELocks += lock_offset
+        if USE_KAHAN:
+            dEC_ptrs = dEC + (offs_b[:, None] * stride_eb)
+        else:
+            dEC_ptrs = None
 
-    _mm_backward(
-        d_accum,
-        dE + (offs_b[:, None] * stride_eb),
-        b_mask,
-        dELocks,
-        n_de_locks_1,
-        C + offs_v[:, None] * stride_cv,
-        v_mask,
-        stride_ed,
-        stride_cd,
-        D,
-        MM_BACK_BLOCK_D,
-        MM_BACK_EVEN_D,
-    )
+        _mm_backward(
+            d_accum,
+            dE + (offs_b[:, None] * stride_eb),
+            dEC_ptrs,
+            offs_b[:, None] < BMax,
+            dELocks,
+            n_de_locks_1,
+            C + offs_v[:, None] * stride_cv,
+            offs_v[:, None] < V,
+            stride_ed,
+            stride_cd,
+            D,
+            MM_BACK_BLOCK_D,
+            MM_BACK_EVEN_D,
+            USE_KAHAN,
+        )
 
-    lock_offset = (pid_v // tl.cdiv(V, BLOCK_V * n_dc_locks_0)) * n_dc_locks_1
-    dCLocks += lock_offset
+    if COMPUTE_DC:
+        lock_offset = (pid_v // tl.cdiv(V, BLOCK_V * n_dc_locks_0)) * n_dc_locks_1
+        dCLocks += lock_offset
 
-    _mm_backward(
-        tl.trans(d_accum),
-        dC + (offs_v[:, None] * stride_cv),
-        v_mask,
-        dCLocks,
-        n_dc_locks_1,
-        E + (offs_b[:, None] * stride_eb),
-        b_mask,
-        stride_cd,
-        stride_ed,
-        D,
-        MM_BACK_BLOCK_D,
-        MM_BACK_EVEN_D,
-    )
+        if USE_KAHAN:
+            dCC_ptrs = dCC + (offs_v[:, None] * stride_cv)
+        else:
+            dCC_ptrs = None
+
+        _mm_backward(
+            tl.trans(d_accum),
+            dC + (offs_v[:, None] * stride_cv),
+            dCC_ptrs,
+            offs_v[:, None] < V,
+            dCLocks,
+            n_dc_locks_1,
+            E + (offs_b[:, None] * stride_eb),
+            offs_b[:, None] < BMax,
+            stride_cd,
+            stride_ed,
+            D,
+            MM_BACK_BLOCK_D,
+            MM_BACK_EVEN_D,
+            USE_KAHAN,
+        )
 
 
 def cce_backward_kernel(
@@ -247,7 +285,8 @@ def cce_backward_kernel(
     shift: bool = False,
     vocab_ordering: torch.Tensor | None = None,
     grad_scale: float = 1.0,
-) -> tuple[torch.Tensor, torch.Tensor]:
+    use_kahan: bool = False,
+) -> tuple[torch.Tensor | None, torch.Tensor | None]:
     assert do.numel() in (e.size(0), 1)
     assert c.size(1) == e.size(1)
     assert lse.size(0) == e.size(0) or (valids is not None and lse.size(0) == valids.size(0))
@@ -263,11 +302,21 @@ def cce_backward_kernel(
     do = do.contiguous()
     lse = lse.contiguous()
 
-    de = torch.zeros_like(e)
-    dc = torch.zeros_like(c)
+    de = torch.zeros_like(e) if e.requires_grad else None
+    dc = torch.zeros_like(c) if c.requires_grad else None
 
-    assert de.stride() == e.stride()
-    assert dc.stride() == c.stride()
+    if de is not None:
+        assert de.stride() == e.stride()
+
+    if dc is not None:
+        assert dc.stride() == c.stride()
+
+    if use_kahan:
+        dec = de.clone() if de is not None else None
+        dcc = dc.clone() if dc is not None else None
+    else:
+        dec = None
+        dcc = None
 
     if valids is not None:
         assert valids.ndim == 1
@@ -285,12 +334,23 @@ def cce_backward_kernel(
 
     if vocab_ordering is not None:
         assert vocab_ordering.ndim == 1
-        assert vocab_ordering.numel() == dc.size(0)
+        assert vocab_ordering.numel() == c.size(0)
         assert vocab_ordering.stride(0) == 1
 
     nd_locks = triton.cdiv(c.size(1), 64)
-    de_locks = e.new_zeros((triton.cdiv(B, nd_locks), nd_locks), dtype=torch.int32)
-    dc_locks = c.new_zeros((triton.cdiv(c.size(0), nd_locks), nd_locks), dtype=torch.int32)
+    if de is not None:
+        de_locks = e.new_zeros((triton.cdiv(B, nd_locks), nd_locks), dtype=torch.int32)
+        de_lock_strides = de_locks.stride()
+    else:
+        de_locks = None
+        de_lock_strides = (None, None)
+
+    if dc is not None:
+        dc_locks = c.new_zeros((triton.cdiv(c.size(0), nd_locks), nd_locks), dtype=torch.int32)
+        dc_lock_strides = dc_locks.stride()
+    else:
+        dc_locks = None
+        dc_lock_strides = (None, None)
 
     _cce_backward_kernel[grid](
         e,
@@ -303,16 +363,17 @@ def cce_backward_kernel(
         softcap,
         targets,
         de,
+        dec,
         de_locks,
         dc,
+        dcc,
         dc_locks,
         B,
         e.size(1),
         c.size(0),
-        de_locks.size(0),
-        de_locks.size(1),
-        dc_locks.size(0),
-        dc_locks.size(1),
+        e.size(0),
+        *de_lock_strides,
+        *dc_lock_strides,
         e.stride(0),
         e.stride(1),
         c.stride(0),
@@ -321,6 +382,15 @@ def cce_backward_kernel(
         filter_eps,
         B_BIN=b_bin_fn(B),
         SHIFT=shift,
+        USE_KAHAN=use_kahan,
     )
+
+    if dcc is not None:
+        assert dc is not None
+        dc.add_(dcc)
+
+    if dec is not None:
+        assert de is not None
+        de.add_(dec)
 
     return de, dc

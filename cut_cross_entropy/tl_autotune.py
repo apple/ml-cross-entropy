@@ -2,7 +2,8 @@
 import functools
 import heapq
 import os
-from typing import Callable
+from dataclasses import dataclass, field
+from typing import Any, Callable
 
 import torch
 import triton
@@ -16,6 +17,66 @@ from triton.testing import (
 )
 
 _AUTOTUNE: bool = os.getenv("CCE_AUTOTUNE", "0") != "0"
+
+
+@dataclass
+class NoneSupportRestorer:
+    reset_idx: list[int]
+    restore_idx: list[int]
+    _restore_copies: list[torch.Tensor | None] = field(default_factory=list, init=False)
+
+    def pre_hook(self, args: list[torch.Tensor | None | Any]) -> None:
+        for i in self.reset_idx:
+            v = args[i]
+            if v is not None:
+                assert isinstance(v, torch.Tensor)
+                v.zero_()
+
+        for i in self.reset_idx:
+            v = args[i]
+            if v is not None:
+                assert isinstance(v, torch.Tensor)
+                self._restore_copies.append(v.clone())
+            else:
+                self._restore_copies.append(None)
+
+    def post_hook(self, args: list[torch.Tensor | None | Any], _exception) -> None:
+        for j, i in enumerate(self.reset_idx):
+            v = args[i]
+            if v is not None:
+                old_v = self._restore_copies[j]
+                assert isinstance(v, torch.Tensor)
+                assert old_v is not None
+
+                v.copy_(old_v)
+
+        self._restore_copies = []
+
+
+@functools.wraps(triton.autotune)
+def _cce_autotune(*args, **kwargs) -> Callable[..., autotuner.Autotuner]:
+    def decorator(fn):
+        reset_idx = []
+        restore_idx = []
+        arg_names = fn.arg_names
+        reset_to_zero = kwargs.pop("reset_to_zero", None)
+        if reset_to_zero is not None:
+            reset_idx = [arg_names.index(k) for k in reset_to_zero]
+
+        restore_value = kwargs.pop("restore_value", None)
+        if restore_value is not None:
+            restore_idx = [arg_names.index(k) for k in restore_value]
+
+        restorer = NoneSupportRestorer(reset_idx, restore_idx)
+        if len(reset_idx) > 0:
+            kwargs["pre_hook"] = restorer.pre_hook
+
+        if len(restore_idx) > 0:
+            kwargs["post_hook"] = restorer.post_hook
+
+        return triton.autotune(*args, **kwargs)(fn)
+
+    return decorator
 
 
 @functools.lru_cache()
@@ -374,7 +435,7 @@ def _cce_forward_best_config() -> Config:
 
 def cce_forward_autotune() -> Callable[..., autotuner.Autotuner | autotuner.Heuristics]:
     if _AUTOTUNE:
-        return triton.autotune(
+        return _cce_autotune(
             configs=get_autotune_config(),
             key=["V", "D", "B_BIN"],
             prune_configs_by={
@@ -383,6 +444,7 @@ def cce_forward_autotune() -> Callable[..., autotuner.Autotuner | autotuner.Heur
                 "top_k": 10,
             },
             restore_value=["LSE"],
+            reset_to_zero=["LA"],
         )
     else:
         return _heuristics_from_config(_cce_forward_best_config())
@@ -402,7 +464,7 @@ def _cce_backward_best_config() -> Config:
 
 def cce_backward_autotune() -> Callable[..., autotuner.Autotuner | autotuner.Heuristics]:
     if _AUTOTUNE:
-        return triton.autotune(
+        return _cce_autotune(
             configs=get_autotune_config(),
             key=["V", "D", "B_BIN"],
             prune_configs_by={
@@ -416,7 +478,7 @@ def cce_backward_autotune() -> Callable[..., autotuner.Autotuner | autotuner.Heu
                 ),
                 "top_k": 5,
             },
-            reset_to_zero=["dE", "dC"],
+            reset_to_zero=["dE", "dC", "dEC", "dCC"],
         )
     else:
         return _heuristics_from_config(_cce_backward_best_config())
@@ -473,7 +535,7 @@ def _indexed_dot_all_configs() -> list[Config]:
 
 def indexed_dot_autotune() -> Callable[..., autotuner.Autotuner | autotuner.Heuristics]:
     if _AUTOTUNE:
-        return triton.autotune(
+        return _cce_autotune(
             configs=_indexed_dot_all_configs(),
             key=["D", "B_BIN"],
             reset_to_zero=["Out"],

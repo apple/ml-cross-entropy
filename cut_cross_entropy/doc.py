@@ -33,6 +33,16 @@ LINEAR_CROSS_ENTROPY_DOC = """Computes cross-entropy loss using the logits gener
         ```
 """
 
+CCE_OPTS_DOC = [
+    """
+    :param filter_eps: The threshold value used to determine which locations can be safely ignored
+        in gradient computation. The default value of "auto" will automatically choose a value
+        based on the input dtype.""",
+    """
+    :param use_kahan: Uses Kahan summation to increase the precision of CCE's reduction along the vocab axis. This only
+        makes sense to set to True when filter_eps is None (or is a very very small value).""",
+]
+
 
 def add_doc_start(*docstr: str):
     def add_doc(fn):

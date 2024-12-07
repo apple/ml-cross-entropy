@@ -7,7 +7,7 @@ import torch
 from cut_cross_entropy.cce_backward import cce_backward_kernel
 from cut_cross_entropy.cce_lse_forward import cce_lse_forward_kernel
 from cut_cross_entropy.constants import IGNORE_INDEX
-from cut_cross_entropy.doc import LINEAR_CROSS_ENTROPY_DOC, add_doc_start
+from cut_cross_entropy.doc import CCE_OPTS_DOC, LINEAR_CROSS_ENTROPY_DOC, add_doc_start
 from cut_cross_entropy.indexed_dot import indexed_neg_dot_forward_kernel
 from cut_cross_entropy.utils import (
     _build_flat_valids,
@@ -25,6 +25,7 @@ class CCEParams:
     filter_eps: float | None
     shift: bool
     batch_shape: torch.Size
+    use_kahan: bool
 
 
 @torch.compile(fullgraph=True, dynamic=True)
@@ -80,8 +81,10 @@ class LinearCrossEntropyFunction(torch.autograd.Function):
         return loss
 
     @staticmethod
-    def backward(ctx, grad_out: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, None]:
-        h, w, lse, targets, valids, logit_avg = ctx.saved_tensors
+    def backward(
+        ctx, grad_out: torch.Tensor
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None, None]:
+        e, c, lse, targets, valids, logit_avg = ctx.saved_tensors
 
         if logit_avg is not None:
             vocab_ordering = sort_logit_avg(logit_avg)
@@ -102,8 +105,8 @@ class LinearCrossEntropyFunction(torch.autograd.Function):
 
         de, dc = cce_backward_kernel(
             grad_out,
-            h,
-            w,
+            e,
+            c,
             lse,
             valids,
             params.softcap,
@@ -112,6 +115,7 @@ class LinearCrossEntropyFunction(torch.autograd.Function):
             shift=params.shift,
             vocab_ordering=vocab_ordering,
             grad_scale=grad_scale,
+            use_kahan=params.use_kahan,
         )
 
         return de, dc, None
@@ -132,6 +136,7 @@ def linear_cross_entropy_apply(
 
 
 @add_doc_start(LINEAR_CROSS_ENTROPY_DOC)
+@add_doc_start(*(doc_str + "\n" for doc_str in CCE_OPTS_DOC))
 def cce_linear_cross_entropy(
     e: torch.Tensor,
     c: torch.Tensor,
@@ -141,12 +146,8 @@ def cce_linear_cross_entropy(
     reduction: str = "mean",
     shift: bool = False,
     filter_eps: float | str | None = "auto",
+    use_kahan: bool = False,
 ) -> torch.Tensor:
-    """
-    :param filter_eps: The threshold value used to determine which locations can be safely ignored
-        in gradient computation. The default value of "auto" will automatically choose a value
-        based on the input dtype.
-    """
     assert e.size()[0:-1] == targets.size()
     assert e.size(-1) == c.size(1)
     if not torch.cuda.is_bf16_supported():
@@ -165,6 +166,11 @@ def cce_linear_cross_entropy(
     e = e.flatten(0, -2)
     targets = targets.flatten()
 
+    if (targets.data_ptr() % 16) != 0:
+        targets = torch.nn.functional.pad(targets, (0, 1))[:-1]
+
+    assert (targets.data_ptr() % 16) == 0
+
     return linear_cross_entropy_apply(
         e,
         c,
@@ -176,5 +182,6 @@ def cce_linear_cross_entropy(
             _handle_eps(filter_eps, e.dtype),
             shift,
             batch_shape,
+            use_kahan,
         ),
     )
