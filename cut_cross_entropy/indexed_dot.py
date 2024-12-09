@@ -8,15 +8,6 @@ from cut_cross_entropy.tl_utils import b_bin_fn
 from cut_cross_entropy.utils import softcapping
 
 
-@indexed_dot_autotune()
-@triton.heuristics(
-    {
-        "EVEN_D": lambda args: args["D"] % args["BLOCK_D"] == 0,
-        "HAS_VALIDS": lambda args: args["Valids"] is not None,
-        "GROUP_B": lambda args: 8,
-    }
-)
-@triton.jit
 def _indexed_neg_dot_forward_kernel(
     E,
     C,
@@ -73,6 +64,17 @@ def _indexed_neg_dot_forward_kernel(
     dot = (e * c).to(tl.float32)
     neg_dot = -tl.sum(dot, 1).to(out_ptrs.dtype.element_ty)
     tl.atomic_add(out_ptrs, neg_dot, mask=offs_b < B)
+
+
+_indexed_neg_dot_forward_kernel = triton.jit(_indexed_neg_dot_forward_kernel)
+_indexed_neg_dot_forward_kernel = triton.heuristics(  # type: ignore
+    {
+        "EVEN_D": lambda args: args["D"] % args["BLOCK_D"] == 0,
+        "HAS_VALIDS": lambda args: args["Valids"] is not None,
+        "GROUP_B": lambda args: 8,
+    }
+)(_indexed_neg_dot_forward_kernel)
+_indexed_neg_dot_forward_kernel = indexed_dot_autotune()(_indexed_neg_dot_forward_kernel)  # type: ignore
 
 
 def indexed_neg_dot_forward_kernel(

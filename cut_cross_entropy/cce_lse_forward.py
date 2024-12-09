@@ -9,20 +9,6 @@ from cut_cross_entropy.tl_autotune import cce_forward_autotune
 from cut_cross_entropy.tl_utils import b_bin_fn, tl_logaddexp, tl_softcapping
 
 
-@cce_forward_autotune()
-@triton.heuristics(
-    {
-        "EVEN_D": lambda args: args["D"] % args["BLOCK_D"] == 0,
-        "HAS_VALIDS": lambda args: args["Valids"] is not None,
-        "HAS_SOFTCAP": lambda args: args["softcap"] is not None,
-        "HAS_LA": lambda args: args["LA"] is not None,
-        "GROUP_B": lambda args: 8,
-        "DOT_PRECISION": lambda args: "tf32"
-        if torch.get_float32_matmul_precision() == "high"
-        else "ieee",
-    }
-)
-@triton.jit
 def _cce_lse_forward_kernel(
     E,
     C,
@@ -113,6 +99,22 @@ def _cce_lse_forward_kernel(
     tl.store(lse_ptrs, lse, mask=o_mask, eviction_policy="evict_last")
 
     tl.atomic_xchg(this_locks, 0)
+
+
+_cce_lse_forward_kernel = triton.jit(_cce_lse_forward_kernel)
+_cce_lse_forward_kernel = triton.heuristics(  # type: ignore
+    {
+        "EVEN_D": lambda args: args["D"] % args["BLOCK_D"] == 0,
+        "HAS_VALIDS": lambda args: args["Valids"] is not None,
+        "HAS_SOFTCAP": lambda args: args["softcap"] is not None,
+        "HAS_LA": lambda args: args["LA"] is not None,
+        "GROUP_B": lambda args: 8,
+        "DOT_PRECISION": lambda args: "tf32"
+        if torch.get_float32_matmul_precision() == "high"
+        else "ieee",
+    }
+)(_cce_lse_forward_kernel)
+_cce_lse_forward_kernel = cce_forward_autotune()(_cce_lse_forward_kernel)  # type: ignore
 
 
 @overload
