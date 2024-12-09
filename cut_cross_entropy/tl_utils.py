@@ -54,7 +54,6 @@ def tl_lock_kahan_sum(ptrs, c_ptrs, v, mask, lock_ptr):
 
     tl.store(c_ptrs, c, mask=mask, eviction_policy="evict_last")
 
-    tl.debug_barrier()
     tl.atomic_xchg(lock_ptr, 0)
 
 
@@ -67,7 +66,6 @@ def tl_lock_add(ptrs, v, mask, lock_ptr):
     new_v = v + cur_v
     tl.store(ptrs, new_v, mask=mask, eviction_policy="evict_last")
 
-    tl.debug_barrier()
     tl.atomic_xchg(lock_ptr, 0)
 
 

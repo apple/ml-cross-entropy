@@ -59,7 +59,7 @@ def linear_cross_entropy(
 
             if impl == "cce_exact":
                 filter_eps = None
-                use_kahan = True
+                use_kahan = False
 
             assert cce_linear_cross_entropy is not None
             return cce_linear_cross_entropy(

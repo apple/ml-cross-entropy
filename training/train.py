@@ -1,6 +1,7 @@
 # Copyright (C) 2024 Apple Inc. All Rights Reserved.
 import os
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence, cast
@@ -35,7 +36,7 @@ MODEL_NAME_MAP = {
     "mistral-nemo": "mistralai/Mistral-Nemo-Instruct-2407",
 }
 
-DATA_NAME_MAP = {"alpaca": "yahma/alpaca-cleaned"}
+DATA_NAME_MAP = {"alpaca": "yahma/alpaca-cleaned", "open-webtext": "Skylion007/openwebtext"}
 
 
 @dataclass
@@ -75,15 +76,24 @@ class TrainingArguments(transformers.TrainingArguments):
 
 def download_hf(name: str, repo_type: str = "model"):
     if not Path(name).exists():
-        subprocess.check_call(
-            [
-                "huggingface-cli",
-                "download",
-                "--exclude=original/*",
-                f"--repo-type={repo_type}",
-                name,
-            ]
-        )
+        for i in range(10):
+            try:
+                subprocess.check_call(
+                    [
+                        "huggingface-cli",
+                        "download",
+                        "--exclude=original/*",
+                        f"--repo-type={repo_type}",
+                        name,
+                    ]
+                )
+            except Exception as e:
+                if i == 9:
+                    raise e
+            else:
+                break
+
+            time.sleep(0.1)
 
 
 def preprocess(
@@ -193,6 +203,71 @@ class DataCollatorForSupervisedDataset:
         )
 
 
+class PretrainDataset(Dataset):
+    """Dataset for pretraining."""
+
+    def __init__(
+        self,
+        data_args: DataArguments,
+        seed: int,
+        tokenizer: transformers.PreTrainedTokenizer,
+        split: str = "train",
+        seq_len: int = 512,
+    ):
+        super().__init__()
+
+        if torch.distributed.get_rank() == 0:
+            train_on_percent = 5
+            eval_on_percent = 0.25
+            dataset = datasets.load_dataset(
+                data_args.dataset_name,
+                split="train",
+                num_proc=48,
+                trust_remote_code=True,
+            ).train_test_split(
+                train_size=(train_on_percent + eval_on_percent) / 100,
+                seed=seed,
+                shuffle=True,
+            )["train"]
+
+            dataset = dataset.train_test_split(
+                train_size=train_on_percent / (train_on_percent + eval_on_percent),
+                seed=seed,
+                shuffle=True,
+            )[split]
+
+            encoded_text = tokenizer(
+                list(example["text"] for example in dataset),
+                add_special_tokens=False,
+                padding=False,
+                truncation=False,
+            ).input_ids
+            all_ids = []
+            for e in encoded_text:
+                all_ids.append(tokenizer.bos_token_id)
+                all_ids.extend(e)
+                all_ids.append(tokenizer.eos_token_id)
+
+            all_ids_l = [all_ids]
+        else:
+            all_ids_l = [None]
+
+        torch.distributed.broadcast_object_list(all_ids_l)
+
+        assert all_ids_l[0] is not None
+        self.all_input_ids = all_ids_l[0]
+
+        self.seq_len = seq_len
+
+    def __len__(self):
+        return len(self.all_input_ids) // self.seq_len
+
+    def __getitem__(self, i) -> dict[str, torch.Tensor]:
+        start = i * self.seq_len
+        seq = torch.as_tensor(self.all_input_ids[start : start + self.seq_len])
+        return dict(input_ids=seq, labels=seq)
+
+
 def make_supervised_data_module(
     tokenizer: transformers.PreTrainedTokenizer,
     data_args,
@@ -210,6 +285,20 @@ def make_supervised_data_module(
     return dict(
         train_dataset=train_dataset,
         eval_dataset=None,
+        data_collator=data_collator,
+    )
+
+
+def make_pretrain_data_module(tokenizer: transformers.PreTrainedTokenizer, data_args, seed) -> dict:
+    train_dataset = PretrainDataset(data_args, seed=seed, tokenizer=tokenizer)
+    eval_dataset = PretrainDataset(data_args, seed=seed, tokenizer=tokenizer, split="test")
+    os.environ["TOKENIZERS_PARALLELISM"] = "False"
+
+    data_collator = DataCollatorForSupervisedDataset(tokenizer.pad_token_id, tokenizer.padding_side)
+
+    return dict(
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
         data_collator=data_collator,
     )
 
@@ -251,11 +340,20 @@ def main():
     # This could be done instead. That will patch transformers code globally
     # cce_patch(config, model_args.cross_entropy_impl)
 
-    model = transformers.AutoModelForCausalLM.from_pretrained(
-        model_args.model_name,
-        attn_implementation=attn_impl,
-        torch_dtype=torch.bfloat16,
-    )
+    is_finetune = "alpaca" in data_args.dataset_name
+
+    if is_finetune:
+        model = transformers.AutoModelForCausalLM.from_pretrained(
+            model_args.model_name,
+            attn_implementation=attn_impl,
+            torch_dtype=torch.bfloat16,
+        )
+    else:
+        model = transformers.AutoModelForCausalLM.from_config(
+            config,
+            attn_implementation=attn_impl,
+            torch_dtype=torch.bfloat16,
+        )
 
     device = torch.device("cuda", torch.cuda.current_device())
     model = model.to(device)
@@ -264,12 +362,19 @@ def main():
 
     model = cce_patch(model, model_args.cross_entropy_impl)
 
-    data_module = make_supervised_data_module(
-        tokenizer,
-        data_args,
-        training_args.seed,
-        uses_system_prompt=config.model_type not in ("gemma2",),
-    )
+    if is_finetune:
+        data_module = make_supervised_data_module(
+            tokenizer,
+            data_args,
+            training_args.seed,
+            uses_system_prompt=config.model_type not in ("gemma2",),
+        )
+    else:
+        data_module = make_pretrain_data_module(
+            tokenizer,
+            data_args,
+            training_args.seed,
+        )
 
     os.environ["TOKENIZERS_PARALLELISM"] = "False"
 

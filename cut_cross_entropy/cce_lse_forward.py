@@ -105,7 +105,6 @@ def _cce_lse_forward_kernel(
     lse = tl_logaddexp(lse, this_lse)
     tl.store(lse_ptrs, lse, mask=o_mask, eviction_policy="evict_last")
 
-    tl.debug_barrier()
     tl.atomic_xchg(this_locks, 0)
 
 

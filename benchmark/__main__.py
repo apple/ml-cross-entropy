@@ -51,7 +51,7 @@ def benchmark(
     torch.set_float32_matmul_precision("high")
 
     if methods is None:
-        methods = ["cce", "torch_compile", "baseline"]
+        methods = ["cce", "torch_compile", "baseline", "cce_exact"]
     elif isinstance(methods, str):
         methods = methods.split(",")
 

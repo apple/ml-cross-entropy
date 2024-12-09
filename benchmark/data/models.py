@@ -47,7 +47,7 @@ def generate_test_data_otf(
     device: str = "cuda",
     dtype: torch.dtype = torch.bfloat16,
     keep_invalids: bool = False,
-    M: int = 8 * 1024,
+    M: int = 1024,
 ):
     default_device = torch.cuda.current_device()
     inference_device = torch.device("cuda", (default_device + 1) % torch.cuda.device_count())
