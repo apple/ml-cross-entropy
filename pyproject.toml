@@ -43,8 +43,8 @@ dev = [
 requires = ["setuptools >= 61.0", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-packages = ["cut_cross_entropy"]
+[tool.setuptools.packages.find]
+include = ["cut_cross_entropy*"]
 
 [tool.setuptools.dynamic]
 version = {attr = "cut_cross_entropy.__version__"}

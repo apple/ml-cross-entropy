@@ -84,16 +84,16 @@ def _cce_lse_forward_kernel(
     if HAS_SOFTCAP:
         logits = tl_softcapping(logits, softcap)
 
-    offs_b = pid_b * BLOCK_B + tl.arange(0, BLOCK_B)
-    o_mask = offs_b < B
     if HAS_LA:
-        logits = tl.where(o_mask[:, None], logits, 0.0)
         this_avg_logit = tl.sum(logits, 0) / B
         tl.atomic_add(LA + offs_v, this_avg_logit, mask=offs_v < V)
 
     this_mx = tl.max(logits, axis=1)
     e = tl.exp(logits - this_mx[:, None])
     this_lse = this_mx + tl.log(tl.sum(e, axis=1))
+
+    offs_b = pid_b * BLOCK_B + tl.arange(0, BLOCK_B)
+    o_mask = offs_b < B
 
     lse_ptrs = LSE + (stride_lse_b * offs_b)
 
@@ -105,6 +105,7 @@ def _cce_lse_forward_kernel(
     lse = tl_logaddexp(lse, this_lse)
     tl.store(lse_ptrs, lse, mask=o_mask, eviction_policy="evict_last")
 
+    tl.debug_barrier()
     tl.atomic_xchg(this_locks, 0)
 
 

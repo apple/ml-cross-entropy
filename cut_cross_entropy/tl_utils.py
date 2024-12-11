@@ -38,22 +38,33 @@ def tl_logaddexp(a, b) -> tl.tensor:
 
 
 @triton.jit
+def tl_2sum(a: tl.tensor, b: tl.tensor) -> tuple[tl.tensor, tl.tensor]:
+    s = a + b
+
+    a_prime = s - b
+    b_prime = s - a_prime
+
+    delta_a = a - a_prime
+    delta_b = b - b_prime
+
+    t = delta_a + delta_b
+    return s, t
+
+
+@triton.jit
 def tl_lock_kahan_sum(ptrs, c_ptrs, v, mask, lock_ptr):
     while tl.atomic_cas(lock_ptr, 0, 1) == 1:
         pass
 
     s = tl.load(ptrs, mask=mask, other=0.0, eviction_policy="evict_last")
-
-    t = s + v
-
-    tl.store(ptrs, t, mask=mask, eviction_policy="evict_last")
-
     c = tl.load(c_ptrs, mask=mask, other=0.0, eviction_policy="evict_last")
 
-    c += (s - t) + v
+    s, c = tl_2sum(s, c + v)
 
+    tl.store(ptrs, s, mask=mask, eviction_policy="evict_last")
     tl.store(c_ptrs, c, mask=mask, eviction_policy="evict_last")
 
+    tl.debug_barrier()
     tl.atomic_xchg(lock_ptr, 0)
 
 
@@ -66,6 +77,7 @@ def tl_lock_add(ptrs, v, mask, lock_ptr):
     new_v = v + cur_v
     tl.store(ptrs, new_v, mask=mask, eviction_policy="evict_last")
 
+    tl.debug_barrier()
     tl.atomic_xchg(lock_ptr, 0)
 
 
