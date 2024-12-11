@@ -108,6 +108,7 @@ def cce_forward(
         cache_position=cache_position,
     )
     hidden_states = outputs[0]
+    hidden_states = hidden_states.type(self.proj_out.weight.dtype)
 
     loss = None
     lm_logits = None
