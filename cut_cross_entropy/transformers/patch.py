@@ -9,6 +9,7 @@ from .gemma2 import patch_gemma2
 from .llama import patch_llama
 from .mistral import patch_mistral
 from .phi3 import patch_phi3
+from .whisper import patch_whisper
 from .utils import PatchOptions, TransformersModelT
 
 
@@ -57,5 +58,7 @@ def cce_patch(
             return patch_gemma2(model_type_or_model, patch_options)
         case "mistral":
             return patch_mistral(model_type_or_model, patch_options)
+        case "whisper":
+            return patch_whisper(model_type_or_model, patch_options)
         case _:
             raise RuntimeError(f"Unknown model type {model_type}")
