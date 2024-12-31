@@ -112,8 +112,7 @@ def cce_forward(
             labels.to(hidden_states.device),
             softcap=self.config.final_logit_softcapping,
             shift=True,
-            impl=_PATCH_OPTS.impl,
-            reduction=_PATCH_OPTS.reduction,
+            **_PATCH_OPTS.to_kwargs(),
         )
     else:
         if labels is None and not is_torchdynamo_compiling():

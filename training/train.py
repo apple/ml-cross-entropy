@@ -93,7 +93,7 @@ def download_hf(name: str, repo_type: str = "model"):
             else:
                 break
 
-            time.sleep(0.1)
+            time.sleep(1)
 
 
 def preprocess(

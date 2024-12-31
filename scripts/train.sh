@@ -13,7 +13,7 @@ torchrun --standalone --nproc-per-node=8 --module training.train \
     --gradient_accumulation_steps 4 \
     --per_device_eval_batch_size 8 \
     --cross_entropy_impl cce \
-    --eval_strategy "steps" \
+    --eval_strategy "no" \
     --eval_steps 1000 \
     --learning_rate 2e-5 \
     --dataloader_num_workers 4 \

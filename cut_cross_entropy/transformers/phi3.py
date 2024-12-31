@@ -114,8 +114,7 @@ def cce_forward(
             self.lm_head.weight,
             labels.to(hidden_states.device),
             shift=True,
-            impl=_PATCH_OPTS.impl,
-            reduction=_PATCH_OPTS.reduction,
+            **_PATCH_OPTS.to_kwargs(),
         )
     else:
         if labels is None and not is_torchdynamo_compiling():
