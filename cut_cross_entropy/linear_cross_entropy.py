@@ -51,6 +51,9 @@ def linear_cross_entropy(
     if isinstance(impl, LinearCrossEntropyImpl):
         impl = impl.name.lower()
 
+    if isinstance(shift, int) and shift < 0:
+        raise ValueError(f"Shift must be non-negative. Got {shift}.")
+
     match impl:
         case "cce" | "cce_exact":
             if platform.system() == "Darwin":
