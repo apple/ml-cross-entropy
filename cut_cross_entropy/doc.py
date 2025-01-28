@@ -32,6 +32,10 @@ LINEAR_CROSS_ENTROPY_DOC = """Computes cross-entropy loss using the logits gener
         ```
 
         If given a boolean value, False will be treated as zero and True will be treated as one.
+
+        When this value is non-zero or True, e and targets must have shape (..., T, D) and (..., T), respectively.
+
+        Integer values must be in [0, T)
 """
 
 CCE_OPTS_DOC = [

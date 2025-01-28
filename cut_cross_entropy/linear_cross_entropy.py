@@ -51,8 +51,8 @@ def linear_cross_entropy(
     if isinstance(impl, LinearCrossEntropyImpl):
         impl = impl.name.lower()
 
-    if isinstance(shift, int) and shift < 0:
-        raise ValueError(f"Shift must be non-negative. Got {shift}.")
+    if isinstance(shift, int) and (shift < 0 or shift >= targets.size(-1)):
+        raise ValueError(f"Shift must be in the range [0, {targets.size(-1)}). Got {shift}.")
 
     match impl:
         case "cce" | "cce_exact":
