@@ -44,7 +44,7 @@ def torch_compile_linear_cross_entropy(
     ignore_index: int = IGNORE_INDEX,
     softcap: float | None = None,
     reduction: str = "mean",
-    shift: bool = False,
+    shift: bool | int = 0,
 ) -> torch.Tensor:
     assert e.size()[0:-1] == targets.size()
     assert e.size(-1) == c.size(1)
@@ -53,6 +53,7 @@ def torch_compile_linear_cross_entropy(
     e = e.contiguous()
     targets = targets.contiguous()
 
+    shift = int(shift)
     valids = _build_flat_valids(targets, ignore_index, shift)
 
     e = e.flatten(0, -2)
@@ -60,7 +61,7 @@ def torch_compile_linear_cross_entropy(
 
     if valids is not None:
         e = e[valids]
-        targets = targets[(valids + 1) if shift else valids]
+        targets = targets[(valids + shift) if shift != 0 else valids]
 
     loss = torch_compile_linear_cross_entropy_apply(
         e,
@@ -75,7 +76,7 @@ def torch_compile_linear_cross_entropy(
     if reduction == "none":
         loss = handle_reduction_none(orig_b_size, valids, shift, loss)
 
-        if shift:
-            loss = loss[..., 1:]
+        if shift != 0:
+            loss = loss[..., shift:]
 
     return loss

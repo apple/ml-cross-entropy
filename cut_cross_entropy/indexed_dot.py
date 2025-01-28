@@ -26,6 +26,7 @@ def _indexed_neg_dot_forward_kernel(
     stride_ib,
     stride_biasv,
     stride_vb,
+    shift,
     B_BIN,
     BLOCK_B: tl.constexpr,
     BLOCK_D: tl.constexpr,
@@ -33,7 +34,7 @@ def _indexed_neg_dot_forward_kernel(
     HAS_BIAS: tl.constexpr,
     HAS_VALIDS: tl.constexpr,
     EVEN_D: tl.constexpr,
-    SHIFT: tl.constexpr,
+    HAS_SHIFT: tl.constexpr,
 ):
     pid = tl.program_id(axis=0)
     num_b_chunks = tl.cdiv(B, BLOCK_B)
@@ -58,7 +59,9 @@ def _indexed_neg_dot_forward_kernel(
 
     e = tl.load(e_ptrs, mask=e_mask, other=0.0)
 
-    offs_b = (offs_b + 1) if SHIFT else offs_b
+    if HAS_SHIFT:
+        offs_b = offs_b + shift
+
     inds = tl.load(Inds + stride_ib * offs_b, mask=offs_b < BMax, other=V)
 
     c_ptrs = C + (inds[:, None] * stride_cv + offs_d[None, :] * stride_cd)
@@ -88,6 +91,7 @@ _indexed_neg_dot_forward_kernel = triton.heuristics(  # type: ignore
         "EVEN_D": lambda args: args["D"] % args["BLOCK_D"] == 0,
         "HAS_BIAS": lambda args: args["Bias"] is not None,
         "HAS_VALIDS": lambda args: args["Valids"] is not None,
+        "HAS_SHIFT": lambda args: args["shift"] != 0,
         "GROUP_B": lambda args: 8,
     }
 )(_indexed_neg_dot_forward_kernel)
@@ -99,7 +103,7 @@ def indexed_neg_dot_forward_kernel(
     c: torch.Tensor,
     inds: torch.Tensor,
     bias: torch.Tensor | None = None,
-    shift: bool = False,
+    shift: int = 0,
     valids: torch.Tensor | None = None,
     softcap: float | None = None,
     out_dtype: torch.dtype | None = None,
@@ -139,8 +143,8 @@ def indexed_neg_dot_forward_kernel(
         inds.stride(0),
         1 if bias is None else bias.stride(0),
         1 if valids is None else valids.stride(0),
+        shift=shift,
         B_BIN=b_bin_fn(B),
-        SHIFT=shift,
     )
 
     if softcap is not None:

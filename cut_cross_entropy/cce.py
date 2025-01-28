@@ -23,7 +23,7 @@ class CCEParams:
     softcap: float | None
     reduction: str
     filter_eps: float | None
-    shift: bool
+    shift: int
     batch_shape: torch.Size
     use_kahan: bool
 
@@ -140,8 +140,8 @@ def linear_cross_entropy_apply(
     loss = LinearCrossEntropyFunction.apply(e, c, bias, params)
     assert isinstance(loss, torch.Tensor)
 
-    if params.shift and params.reduction == "none":
-        loss = loss[..., 1:]
+    if params.shift != 0 and params.reduction == "none":
+        loss = loss[..., params.shift :]
 
     return loss
 
@@ -156,7 +156,7 @@ def cce_linear_cross_entropy(
     ignore_index: int = IGNORE_INDEX,
     softcap: float | None = None,
     reduction: str = "mean",
-    shift: bool = False,
+    shift: bool | int = 0,
     filter_eps: float | str | None = "auto",
     use_kahan: bool = False,
 ) -> torch.Tensor:
@@ -173,6 +173,7 @@ def cce_linear_cross_entropy(
     e = e.contiguous()
     targets = targets.contiguous()
 
+    shift = int(shift)
     valids = _build_flat_valids(targets, ignore_index, shift)
 
     e = e.flatten(0, -2)

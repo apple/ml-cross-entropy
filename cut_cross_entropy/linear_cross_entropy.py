@@ -39,7 +39,7 @@ def linear_cross_entropy(
     ignore_index: int = IGNORE_INDEX,
     softcap: float | None = None,
     reduction: str = "mean",
-    shift: bool = False,
+    shift: bool | int = 0,
     filter_eps: float | str | None = "auto",
     use_kahan: bool = False,
     impl: str | LinearCrossEntropyImpl = LCE_IMPL_DEFAULT,
@@ -80,7 +80,7 @@ class LinearCrossEntropy(nn.Module):
         ignore_index: int = IGNORE_INDEX,
         softcap: float | None = None,
         reduction: str = "mean",
-        shift: bool = False,
+        shift: bool | int = 0,
         filter_eps: float | str | None = "auto",
         use_kahan: bool = False,
         impl: str | LinearCrossEntropyImpl = LCE_IMPL_DEFAULT,
@@ -95,13 +95,20 @@ class LinearCrossEntropy(nn.Module):
 
         self.impl = impl
 
-    def forward(self, e: torch.Tensor, c: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        e: torch.Tensor,
+        c: torch.Tensor,
+        targets: torch.Tensor,
+        bias: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         return linear_cross_entropy(
             e,
             c,
             targets,
-            self.ignore_index,
-            self.softcap,
+            bias=bias,
+            ignore_index=self.ignore_index,
+            softcap=self.softcap,
             reduction=self.reduction,
             shift=self.shift,
             filter_eps=self.filter_eps,

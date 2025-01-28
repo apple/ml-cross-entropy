@@ -105,6 +105,7 @@ def _cce_backward_kernel(
     stride_biasv,
     stride_vb,
     filter_eps,
+    shift,
     B_BIN,
     BLOCK_B: tl.constexpr,
     BLOCK_V: tl.constexpr,
@@ -120,7 +121,7 @@ def _cce_backward_kernel(
     FILTER_GRAD: tl.constexpr,
     HAS_TARGETS: tl.constexpr,
     HAS_SOFTCAP: tl.constexpr,
-    SHIFT: tl.constexpr,
+    HAS_SHIFT: tl.constexpr,
     USE_KAHAN: tl.constexpr,
     COMPUTE_DC: tl.constexpr,
     COMPUTE_DE: tl.constexpr,
@@ -187,7 +188,11 @@ def _cce_backward_kernel(
     d_accum = tl.where(offs_v[None, :] < V, d_accum, 0.0)
 
     if HAS_TARGETS:
-        target_offs_b = (offs_b + 1) if SHIFT else offs_b
+        if HAS_SHIFT:
+            target_offs_b = offs_b + shift
+        else:
+            target_offs_b = offs_b
+
         targets = tl.load(Targets + target_offs_b, mask=target_offs_b < BMax, other=V + 1)
         is_target = targets[:, None] == offs_v[None, :]
         d_accum += tl.where(is_target, -1.0, 0.0)
@@ -204,7 +209,11 @@ def _cce_backward_kernel(
     if ITEM_DO:
         d_out = tl.load(dOut)
     else:
-        d_out_offs_b = (offs_b + 1) if SHIFT else offs_b
+        if HAS_SHIFT:
+            d_out_offs_b = offs_b + shift
+        else:
+            d_out_offs_b = offs_b
+
         d_out = tl.load(dOut + d_out_offs_b, mask=d_out_offs_b < BMax, other=0.0)[:, None]
 
     d_out = grad_scale * d_out
@@ -274,6 +283,7 @@ _cce_backward_kernel = triton.heuristics(  # type: ignore
         "FILTER_GRAD": lambda args: args["filter_eps"] is not None,
         "HAS_TARGETS": lambda args: args["Targets"] is not None,
         "HAS_SOFTCAP": lambda args: args["softcap"] is not None,
+        "HAS_SHIFT": lambda args: args["shift"] != 0,
         "ITEM_DO": lambda args: args["dOut"].numel() == 1,
         "GROUP_B": lambda args: 8,
         "COMPUTE_DC": lambda args: args["dC"] is not None,
@@ -294,7 +304,7 @@ def cce_backward_kernel(
     softcap: float | None,
     filter_eps: float | None,
     targets: torch.Tensor | None = None,
-    shift: bool = False,
+    shift: int = 0,
     vocab_ordering: torch.Tensor | None = None,
     grad_scale: float = 1.0,
     use_kahan: bool = False,
@@ -410,8 +420,8 @@ def cce_backward_kernel(
         1 if bias is None else bias.stride(0),
         1 if valids is None else valids.stride(0),
         filter_eps,
+        shift=shift,
         B_BIN=b_bin_fn(B),
-        SHIFT=shift,
         USE_KAHAN=use_kahan,
     )
 

@@ -21,16 +21,17 @@ LINEAR_CROSS_ENTROPY_DOC = """Computes cross-entropy loss using the logits gener
     :param ignore_index: If an input as a target of this value, it is ignored in the loss computation.
     :param softcap: The value for logit softcapping.
     :param reduction: The reduction to perform over the loss. Supports "mean", "sum", and "none".
-    :param shift: If true, the embedding and targets are assumed to require a shift along the
-        temporal axis to perform next token prediction. Specifically, setting this to true
-        will efficiently compute
+    :param shift: When non-zero, the embedding and targets will be shifted along the temporal axis to perform nth-next token prediction.
+        Specifically, this is used to efficiently compute the following
 
         ```python
-        shift_e = e[..., :-1, :].flatten(0, -2)
-        shift_targets = targets[..., 1:].flatten()
+        shift_e = e[..., :-shift, :].flatten(0, -2)
+        shift_targets = targets[..., shift:].flatten()
 
         loss = F.cross_entropy((shift_e @ c.T), targets)
         ```
+
+        If given a boolean value, False will be treated as zero and True will be treated as one.
 """
 
 CCE_OPTS_DOC = [

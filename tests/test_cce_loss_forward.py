@@ -15,13 +15,14 @@ def _loss(
     targets: torch.Tensor,
     bias: torch.Tensor | None,
     softcap: float | None,
-    shift: bool,
+    shift: int,
 ) -> torch.Tensor:
     N, T = targets.size()
-    if shift:
-        e = e[:, :-1]
-        targets = targets[:, 1:]
-        T = T - 1
+
+    if shift != 0:
+        e = e[:, :-shift]
+        targets = targets[:, shift:]
+        T = T - shift
 
     e = e.flatten(0, -2)
     targets = targets.flatten()
@@ -47,7 +48,7 @@ def _loss(
 )
 @pytest.mark.parametrize("softcap", [None, 20.0])
 @pytest.mark.parametrize("has_bias", [True, False])
-@pytest.mark.parametrize("shift", [False, True])
+@pytest.mark.parametrize("shift", [0, 2])
 @pytest.mark.parametrize("invalids", [False, True])
 @pytest.mark.parametrize("shape", [(256, 512, 128), (252, 507, 128), (252, 507, 123)])
 def test_loss_forward(
@@ -56,7 +57,7 @@ def test_loss_forward(
     error_tol: float,
     softcap: float | None,
     has_bias: bool,
-    shift: bool,
+    shift: int,
     invalids: bool,
     shape: tuple[int, int, int],
 ):
