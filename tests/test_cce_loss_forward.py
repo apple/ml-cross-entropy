@@ -75,7 +75,7 @@ def test_loss_forward(
     c[0 : min(N, V) // 2] = e[0 : min(N, V) // 2]
 
     if has_bias:
-        bias = torch.randn(V, device="cuda", dtype=dtype) * 0.02
+        bias = torch.randn(V, device="cuda", dtype=dtype) * 0.01
     else:
         bias = None
 
