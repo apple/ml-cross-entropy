@@ -12,6 +12,7 @@ from cut_cross_entropy.tl_utils import b_bin_fn, tl_logaddexp, tl_softcapping
 def _cce_lse_forward_kernel(
     E,
     C,
+    Bias,
     LSE,
     LA,
     Locks,
@@ -25,11 +26,13 @@ def _cce_lse_forward_kernel(
     stride_ed,
     stride_cv,
     stride_cd,
+    stride_biasv,
     stride_lse_b,
     stride_vb,
     num_locks,
     # Meta-parameters
     B_BIN,
+    HAS_BIAS: tl.constexpr,
     HAS_VALIDS: tl.constexpr,
     BLOCK_B: tl.constexpr,
     BLOCK_V: tl.constexpr,
@@ -80,6 +83,11 @@ def _cce_lse_forward_kernel(
 
     tl.debug_barrier()
 
+    if HAS_BIAS:
+        bias = tl.load(Bias + offs_v * stride_biasv, mask=offs_v < V, other=0.0)
+        bias = bias.to(dtype=accum.dtype)
+        accum += bias[None, :]
+
     logits = tl.where(offs_v[None, :] < V, accum, -float("inf"))
     if HAS_SOFTCAP:
         logits = tl_softcapping(logits, softcap)
@@ -113,6 +121,7 @@ _cce_lse_forward_kernel = triton.jit(_cce_lse_forward_kernel)
 _cce_lse_forward_kernel = triton.heuristics(  # type: ignore
     {
         "EVEN_D": lambda args: args["D"] % args["BLOCK_D"] == 0,
+        "HAS_BIAS": lambda args: args["Bias"] is not None,
         "HAS_VALIDS": lambda args: args["Valids"] is not None,
         "HAS_SOFTCAP": lambda args: args["softcap"] is not None,
         "HAS_LA": lambda args: args["LA"] is not None,
@@ -127,8 +136,9 @@ _cce_lse_forward_kernel = cce_forward_autotune()(_cce_lse_forward_kernel)  # typ
 
 @overload
 def cce_lse_forward_kernel(
-    e,
-    c,
+    e: torch.Tensor,
+    c: torch.Tensor,
+    bias: torch.Tensor | None = None,
     valids: torch.Tensor | None = None,
     softcap: float | None = None,
     return_logit_avg: Literal[False] = False,
@@ -137,8 +147,9 @@ def cce_lse_forward_kernel(
 
 @overload
 def cce_lse_forward_kernel(
-    e,
-    c,
+    e: torch.Tensor,
+    c: torch.Tensor,
+    bias: torch.Tensor | None = None,
     valids: torch.Tensor | None = None,
     softcap: float | None = None,
     return_logit_avg: Literal[True] = True,
@@ -147,8 +158,9 @@ def cce_lse_forward_kernel(
 
 @overload
 def cce_lse_forward_kernel(
-    e,
-    c,
+    e: torch.Tensor,
+    c: torch.Tensor,
+    bias: torch.Tensor | None = None,
     valids: torch.Tensor | None = None,
     softcap: float | None = None,
     return_logit_avg: bool = False,
@@ -158,6 +170,7 @@ def cce_lse_forward_kernel(
 def cce_lse_forward_kernel(
     e: torch.Tensor,
     c: torch.Tensor,
+    bias: torch.Tensor | None = None,
     valids: torch.Tensor | None = None,
     softcap: float | None = None,
     return_logit_avg: bool = False,
@@ -170,6 +183,10 @@ def cce_lse_forward_kernel(
         B = valids.numel()
     else:
         B, _ = e.shape
+
+    if bias is not None:
+        assert bias.ndim == 1
+        assert c.shape[0] == bias.shape[0]
 
     V, D = c.shape
     # Allocates output.
@@ -192,6 +209,7 @@ def cce_lse_forward_kernel(
     _cce_lse_forward_kernel[grid](
         e,
         c,
+        bias,
         lse,  #
         logit_avg,
         locks,
@@ -205,6 +223,7 @@ def cce_lse_forward_kernel(
         e.stride(1),  #
         c.stride(0),
         c.stride(1),  #
+        1 if bias is None else bias.stride(0),
         lse.stride(0),
         1 if valids is None else valids.stride(0),
         num_locks=locks.size(0),

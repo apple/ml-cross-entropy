@@ -13,6 +13,7 @@ def _loss(
     e: torch.Tensor,
     c: torch.Tensor,
     targets: torch.Tensor,
+    bias: torch.Tensor | None,
     softcap: float | None,
     shift: bool,
 ) -> torch.Tensor:
@@ -26,6 +27,9 @@ def _loss(
     targets = targets.flatten()
 
     logits = e @ c.T
+    if bias is not None:
+        logits += bias
+
     if softcap is not None:
         logits = softcapping(logits, softcap)
 
@@ -42,6 +46,7 @@ def _loss(
     "dtype,error_tol", [(torch.float32, 1e-5), (torch.float16, 1e-3), (torch.bfloat16, 1e-2)]
 )
 @pytest.mark.parametrize("softcap", [None, 20.0])
+@pytest.mark.parametrize("has_bias", [True, False])
 @pytest.mark.parametrize("shift", [False, True])
 @pytest.mark.parametrize("invalids", [False, True])
 @pytest.mark.parametrize("shape", [(256, 512, 128), (252, 507, 128), (252, 507, 123)])
@@ -50,6 +55,7 @@ def test_loss_forward(
     dtype: torch.dtype,
     error_tol: float,
     softcap: float | None,
+    has_bias: bool,
     shift: bool,
     invalids: bool,
     shape: tuple[int, int, int],
@@ -67,6 +73,11 @@ def test_loss_forward(
 
     c[0 : min(N, V) // 2] = e[0 : min(N, V) // 2]
 
+    if has_bias:
+        bias = torch.randn(V, device="cuda", dtype=dtype) * 0.02
+    else:
+        bias = None
+
     e = e.view(4, -1, D)
 
     targets = torch.randint(0, V, size=(N,), device="cuda")
@@ -77,13 +88,15 @@ def test_loss_forward(
 
     targets = targets.view(e.size()[0:-1])
 
-    gt = _loss(e.float(), c.float(), targets, softcap, shift)
+    gt = _loss(
+        e.float(), c.float(), targets, bias.float() if bias is not None else None, softcap, shift
+    )
 
     torch.set_float32_matmul_precision("highest" if dtype == torch.float32 else "high")
-    ref = _loss(e, c, targets, softcap, shift)
+    ref = _loss(e, c, targets, bias, softcap, shift)
 
     cce_loss = linear_cross_entropy(
-        e, c, targets, softcap=softcap, shift=shift, reduction="none", impl=impl
+        e, c, targets, bias=bias, softcap=softcap, shift=shift, reduction="none", impl=impl
     )
 
     expected_error = (gt - ref).abs()

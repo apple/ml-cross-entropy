@@ -478,7 +478,7 @@ def cce_backward_autotune() -> Callable[..., autotuner.Autotuner | autotuner.Heu
                 ),
                 "top_k": 5,
             },
-            reset_to_zero=["dE", "dC", "dEC", "dCC"],
+            reset_to_zero=["dE", "dC", "dEC", "dCC", "dBias"],
         )
     else:
         return _heuristics_from_config(_cce_backward_best_config())

@@ -16,12 +16,16 @@ def torch_compile_linear_cross_entropy_apply(
     e: torch.Tensor,
     c: torch.Tensor,
     targets: torch.Tensor,
+    bias: torch.Tensor | None = None,
     softcap: float | None = None,
     *,
     ignore_index: int = IGNORE_INDEX,
     reduction: str = "mean",
 ) -> torch.Tensor:
     logits = e @ c.T
+
+    if bias is not None:
+        logits = logits + bias
 
     if softcap is not None:
         logits = softcapping(logits, softcap)
@@ -36,6 +40,7 @@ def torch_compile_linear_cross_entropy(
     e: torch.Tensor,
     c: torch.Tensor,
     targets: torch.Tensor,
+    bias: torch.Tensor | None = None,
     ignore_index: int = IGNORE_INDEX,
     softcap: float | None = None,
     reduction: str = "mean",
@@ -61,6 +66,7 @@ def torch_compile_linear_cross_entropy(
         e,
         c,
         targets,
+        bias,
         softcap,
         ignore_index=ignore_index,
         reduction=reduction,

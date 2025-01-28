@@ -12,6 +12,7 @@ def _indexed_neg_dot_forward_kernel(
     E,
     C,
     Inds,
+    Bias,
     Valids,
     Out,
     B,
@@ -23,11 +24,13 @@ def _indexed_neg_dot_forward_kernel(
     stride_cv,
     stride_cd,
     stride_ib,
+    stride_biasv,
     stride_vb,
     B_BIN,
     BLOCK_B: tl.constexpr,
     BLOCK_D: tl.constexpr,
     GROUP_B: tl.constexpr,
+    HAS_BIAS: tl.constexpr,
     HAS_VALIDS: tl.constexpr,
     EVEN_D: tl.constexpr,
     SHIFT: tl.constexpr,
@@ -69,14 +72,21 @@ def _indexed_neg_dot_forward_kernel(
     offs_b = tl.arange(0, BLOCK_B) + pid_b * BLOCK_B
     out_ptrs = Out + offs_b
     dot = e.to(tl.float32) * c.to(tl.float32)
-    neg_dot = -tl.sum(dot, 1).to(out_ptrs.dtype.element_ty)
-    tl.atomic_add(out_ptrs, neg_dot, mask=offs_b < B)
+    neg_dot = -tl.sum(dot, 1)
+
+    if HAS_BIAS:
+        bias = tl.load(Bias + inds * stride_biasv, mask=inds < V, other=0.0)
+        bias = bias.to(tl.float32)
+        neg_dot -= bias
+
+    tl.atomic_add(out_ptrs, neg_dot.to(out_ptrs.dtype.element_ty), mask=offs_b < B)
 
 
 _indexed_neg_dot_forward_kernel = triton.jit(_indexed_neg_dot_forward_kernel)
 _indexed_neg_dot_forward_kernel = triton.heuristics(  # type: ignore
     {
         "EVEN_D": lambda args: args["D"] % args["BLOCK_D"] == 0,
+        "HAS_BIAS": lambda args: args["Bias"] is not None,
         "HAS_VALIDS": lambda args: args["Valids"] is not None,
         "GROUP_B": lambda args: 8,
     }
@@ -88,6 +98,7 @@ def indexed_neg_dot_forward_kernel(
     e: torch.Tensor,
     c: torch.Tensor,
     inds: torch.Tensor,
+    bias: torch.Tensor | None = None,
     shift: bool = False,
     valids: torch.Tensor | None = None,
     softcap: float | None = None,
@@ -114,6 +125,7 @@ def indexed_neg_dot_forward_kernel(
         e,
         c,
         inds,
+        bias,
         valids,
         out,
         B,
@@ -125,6 +137,7 @@ def indexed_neg_dot_forward_kernel(
         c.stride(0),
         c.stride(1),
         inds.stride(0),
+        1 if bias is None else bias.stride(0),
         1 if valids is None else valids.stride(0),
         B_BIN=b_bin_fn(B),
         SHIFT=shift,

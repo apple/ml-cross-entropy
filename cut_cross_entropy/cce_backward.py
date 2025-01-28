@@ -75,6 +75,7 @@ def _block_is_filtered(check_val: tl.tensor, filter_eps: tl.tensor) -> tl.tensor
 def _cce_backward_kernel(
     E,
     C,
+    Bias,
     LSE,
     dOut,
     grad_scale,
@@ -88,6 +89,7 @@ def _cce_backward_kernel(
     dC,
     dCC,
     dCLocks,
+    dBias,
     B,
     D,
     V,
@@ -100,6 +102,7 @@ def _cce_backward_kernel(
     stride_ed,
     stride_cv,
     stride_cd,
+    stride_biasv,
     stride_vb,
     filter_eps,
     B_BIN,
@@ -111,6 +114,7 @@ def _cce_backward_kernel(
     EVEN_D: tl.constexpr,
     MM_BACK_EVEN_D: tl.constexpr,
     ITEM_DO: tl.constexpr,
+    HAS_BIAS: tl.constexpr,
     HAS_VALIDS: tl.constexpr,
     HAS_VOCAB_ORDERING: tl.constexpr,
     FILTER_GRAD: tl.constexpr,
@@ -120,6 +124,7 @@ def _cce_backward_kernel(
     USE_KAHAN: tl.constexpr,
     COMPUTE_DC: tl.constexpr,
     COMPUTE_DE: tl.constexpr,
+    COMPUTE_DBIAS: tl.constexpr,
 ):
     pid = tl.program_id(axis=0)
     num_b_chunks = tl.cdiv(B, BLOCK_B)
@@ -164,6 +169,11 @@ def _cce_backward_kernel(
 
     tl.debug_barrier()
 
+    if HAS_BIAS:
+        bias = tl.load(Bias + offs_v * stride_biasv, mask=offs_v < V, other=0.0)
+        bias = bias.to(dtype=accum.dtype)
+        accum += bias[None, :]
+
     if HAS_SOFTCAP:
         accum = tl_softcapping(accum, softcap)
 
@@ -199,7 +209,12 @@ def _cce_backward_kernel(
 
     d_out = grad_scale * d_out
 
-    d_accum = (d_accum * d_out).to(e_ptrs.dtype.element_ty)
+    d_accum = d_accum * d_out
+
+    if COMPUTE_DBIAS:
+        tl.atomic_add(dBias + offs_v * stride_biasv, tl.sum(d_accum, 0), mask=offs_v < V)
+
+    d_accum = d_accum.to(e_ptrs.dtype.element_ty)
 
     if COMPUTE_DE:
         lock_offset = (pid_b // tl.cdiv(B, BLOCK_B * n_de_locks_0)) * n_de_locks_1
@@ -254,6 +269,7 @@ _cce_backward_kernel = triton.heuristics(  # type: ignore
         "MM_BACK_BLOCK_D": lambda args: _cce_back_block_d(args),
         "MM_BACK_EVEN_D": lambda args: (args["D"] % _cce_back_block_d(args)) == 0,
         "HAS_VALIDS": lambda args: args["Valids"] is not None,
+        "HAS_BIAS": lambda args: args["Bias"] is not None,
         "HAS_VOCAB_ORDERING": lambda args: args["VocabOrdering"] is not None,
         "FILTER_GRAD": lambda args: args["filter_eps"] is not None,
         "HAS_TARGETS": lambda args: args["Targets"] is not None,
@@ -262,6 +278,7 @@ _cce_backward_kernel = triton.heuristics(  # type: ignore
         "GROUP_B": lambda args: 8,
         "COMPUTE_DC": lambda args: args["dC"] is not None,
         "COMPUTE_DE": lambda args: args["dE"] is not None,
+        "COMPUTE_DBIAS": lambda args: args["dBias"] is not None,
     }
 )(_cce_backward_kernel)
 _cce_backward_kernel = cce_backward_autotune()(_cce_backward_kernel)  # type: ignore
@@ -271,6 +288,7 @@ def cce_backward_kernel(
     do: torch.Tensor,
     e: torch.Tensor,
     c: torch.Tensor,
+    bias: torch.Tensor | None,
     lse: torch.Tensor,
     valids: torch.Tensor | None,
     softcap: float | None,
@@ -280,7 +298,7 @@ def cce_backward_kernel(
     vocab_ordering: torch.Tensor | None = None,
     grad_scale: float = 1.0,
     use_kahan: bool = False,
-) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
     assert do.numel() in (e.size(0), 1)
     assert c.size(1) == e.size(1)
     assert lse.size(0) == e.size(0) or (valids is not None and lse.size(0) == valids.size(0))
@@ -299,11 +317,20 @@ def cce_backward_kernel(
     de = torch.zeros_like(e) if e.requires_grad else None
     dc = torch.zeros_like(c) if c.requires_grad else None
 
+    if bias is not None:
+        dbias = torch.zeros_like(bias, dtype=torch.float32) if bias.requires_grad else None
+    else:
+        dbias = None
+
     if de is not None:
         assert de.stride() == e.stride()
 
     if dc is not None:
         assert dc.stride() == c.stride()
+
+    if dbias is not None:
+        assert bias is not None
+        assert dbias.stride() == bias.stride()
 
     if use_kahan:
         dec = torch.zeros_like(e) if de is not None else None
@@ -355,6 +382,7 @@ def cce_backward_kernel(
     _cce_backward_kernel[grid](
         e,
         c,
+        bias,
         lse,
         do,
         grad_scale,
@@ -368,6 +396,7 @@ def cce_backward_kernel(
         dc,
         dcc,
         dc_locks,
+        dbias,
         B,
         e.size(1),
         c.size(0),
@@ -378,6 +407,7 @@ def cce_backward_kernel(
         e.stride(1),
         c.stride(0),
         c.stride(1),
+        1 if bias is None else bias.stride(0),
         1 if valids is None else valids.stride(0),
         filter_eps,
         B_BIN=b_bin_fn(B),
@@ -385,4 +415,8 @@ def cce_backward_kernel(
         USE_KAHAN=use_kahan,
     )
 
-    return de, dc
+    if dbias is not None:
+        assert bias is not None
+        dbias = dbias.to(dtype=bias.dtype)
+
+    return de, dc, dbias
