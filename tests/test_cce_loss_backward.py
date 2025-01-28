@@ -70,8 +70,8 @@ def _grads(
 
 
 @skip_no_cuda
-@pytest.mark.parametrize("impl", ["cce", "torch_compile", "cce_exact"][2:])
-@pytest.mark.parametrize("dtype,error_tol", [(torch.float16, 1e-3), (torch.bfloat16, 1e-2)][1:])
+@pytest.mark.parametrize("impl", ["cce", "torch_compile", "cce_exact"])
+@pytest.mark.parametrize("dtype,error_tol", [(torch.float16, 1e-3), (torch.bfloat16, 1e-2)])
 @pytest.mark.parametrize("softcap", [None, 20.0])
 @pytest.mark.parametrize("has_bias", [False, True])
 @pytest.mark.parametrize("shift", [False, True])
