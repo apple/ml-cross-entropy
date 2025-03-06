@@ -16,7 +16,7 @@ test = [
     "pytest-sugar",
 ]
 transformers = [
-    "transformers>=4.44.2",
+    "transformers>=4.48.2",
 ]
 
 all = [

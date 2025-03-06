@@ -11,6 +11,7 @@ import torch
 import torch.distributed
 import transformers
 from torch.utils.data import Dataset
+from transformers.trainer import EvalPrediction
 
 from cut_cross_entropy.transformers import cce_patch
 
@@ -34,6 +35,7 @@ MODEL_NAME_MAP = {
     "phi3.5": "microsoft/Phi-3.5-mini-instruct",
     "llama3": "meta-llama/Meta-Llama-3-8B-Instruct",
     "mistral-nemo": "mistralai/Mistral-Nemo-Instruct-2407",
+    "qwen2.5": "Qwen/Qwen2.5-7B-Instruct",
 }
 
 DATA_NAME_MAP = {"alpaca": "yahma/alpaca-cleaned", "open-webtext": "Skylion007/openwebtext"}
@@ -173,7 +175,7 @@ class DataCollatorForSupervisedDataset:
     pad_token_id: int | None
     padding_side: str
 
-    def __call__(self, instances: Sequence[dict]) -> dict[str, torch.Tensor]:
+    def __call__(self, instances: Sequence[dict]) -> dict[str, torch.Tensor | None]:
         input_ids, labels = tuple(
             [instance[key] for instance in instances] for key in ("input_ids", "labels")
         )
@@ -181,9 +183,8 @@ class DataCollatorForSupervisedDataset:
         assert self.pad_token_id is not None
         padded_input_ids = torch.full((len(input_ids), max_len), self.pad_token_id)
         padded_labels = torch.full((len(input_ids), max_len), IGNORE_INDEX)
-        position_ids = (
-            torch.arange(0, max_len, dtype=torch.int64).view(1, -1).repeat(len(input_ids), 1)
-        )
+        position_ids = torch.zeros((len(input_ids), max_len), dtype=torch.int64)
+        attention_mask = torch.full((len(input_ids), max_len), False, dtype=torch.bool)
 
         for i, (inp, lbl) in enumerate(zip(input_ids, labels, strict=True)):
             if self.padding_side == "right":
@@ -193,12 +194,13 @@ class DataCollatorForSupervisedDataset:
 
             padded_input_ids[i, slc] = inp
             padded_labels[i, slc] = lbl
-            position_ids[i, slc] -= position_ids[i, slc][0].item()
+            position_ids[i, slc] = torch.arange(len(inp), dtype=position_ids.dtype)
+            attention_mask[i, slc] = True
 
         return dict(
             input_ids=padded_input_ids,
             labels=padded_labels,
-            attention_mask=padded_input_ids.ne(self.pad_token_id),
+            attention_mask=attention_mask,
             position_ids=position_ids,
         )
 
@@ -243,10 +245,13 @@ class PretrainDataset(Dataset):
                 truncation=False,
             ).input_ids
             all_ids = []
+            assert tokenizer.bos_token_id is not None or tokenizer.eos_token_id is not None
             for e in encoded_text:
-                all_ids.append(tokenizer.bos_token_id)
+                if tokenizer.bos_token_id is not None:
+                    all_ids.append(tokenizer.bos_token_id)
                 all_ids.extend(e)
-                all_ids.append(tokenizer.eos_token_id)
+                if tokenizer.eos_token_id is not None:
+                    all_ids.append(tokenizer.eos_token_id)
 
             all_ids_l = [all_ids]
         else:
@@ -303,6 +308,69 @@ def make_pretrain_data_module(tokenizer: transformers.PreTrainedTokenizer, data_
     )
 
 
+@torch.compile(dynamic=True)
+def _compute_loss(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+    labels = labels.flatten()
+    logits = logits.float().flatten(0, -2)
+    nll = torch.nn.functional.cross_entropy(
+        logits,
+        labels,
+        ignore_index=IGNORE_INDEX,
+        reduction="none",
+    )
+    nll[labels == IGNORE_INDEX] = 0.0
+    return nll
+
+
+def _compute_ppl(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+    nll = _compute_loss(logits, labels)
+
+    return torch.exp(nll.mean(-1) * (nll.size(-1) / (labels != IGNORE_INDEX).count_nonzero(-1)))
+
+
+@dataclass
+class MetricReducer:
+    _val: float | torch.Tensor = 0.0
+    _counter: int = 0
+
+    @torch.no_grad()
+    def add(self, v: torch.Tensor):
+        if v.numel() > 0:
+            self._val = self._val + v.detach().sum()
+            self._counter += v.numel()
+
+    @property
+    def value(self) -> float:
+        return float(self._val) / max(self._counter, 1)
+
+    def reset(self):
+        self._val = 0
+        self._counter = 0
+
+
+@dataclass
+class Metrics:
+    ppl: MetricReducer = field(default_factory=MetricReducer)
+
+    @torch.inference_mode()
+    def __call__(self, eval_pred: EvalPrediction, compute_result: bool) -> dict[str, float]:
+        logits = torch.as_tensor(eval_pred.predictions[..., :-1, :])
+        labels = torch.as_tensor(eval_pred.label_ids[..., 1:])
+
+        ppl = _compute_ppl(logits, labels)
+
+        self.ppl.add(ppl)
+
+        res = {
+            "perplexity": self.ppl.value,
+        }
+
+        if compute_result:
+            self.ppl.reset()
+
+        return res
+
+
 def main():
     parser = transformers.HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
@@ -332,10 +400,15 @@ def main():
         tokenizer.pad_token = "<pad>"
     elif config.model_type == "llama":
         tokenizer.pad_token = "<|reserved_special_token_0|>"
+    elif config.model_type == "phi3":
+        tokenizer.eos_token = "<|end|>"
 
     attn_impl = model_args.attn_impl
     if attn_impl is None:
-        attn_impl = "flash_attention_2" if config.model_type != "gemma2" else "eager"
+        if config.model_type == "gemma2":
+            attn_impl = "eager"
+        else:
+            attn_impl = "flash_attention_2"
 
     # This could be done instead. That will patch transformers code globally
     # cce_patch(config, model_args.cross_entropy_impl)
@@ -360,7 +433,7 @@ def main():
 
     model = cast(transformers.PreTrainedModel, model)
 
-    model = cce_patch(model, model_args.cross_entropy_impl)
+    model = cce_patch(model, model_args.cross_entropy_impl, train_only=True)
 
     if is_finetune:
         data_module = make_supervised_data_module(
@@ -369,19 +442,23 @@ def main():
             training_args.seed,
             uses_system_prompt=config.model_type not in ("gemma2",),
         )
+        compute_metrics = None
     else:
         data_module = make_pretrain_data_module(
             tokenizer,
             data_args,
             training_args.seed,
         )
+        training_args.batch_eval_metrics = True
+        compute_metrics = Metrics()
 
     os.environ["TOKENIZERS_PARALLELISM"] = "False"
 
     trainer = transformers.Trainer(
         model,
         training_args,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
+        compute_metrics=compute_metrics,
         **data_module,
     )
 

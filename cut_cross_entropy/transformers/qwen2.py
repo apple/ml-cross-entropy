@@ -1,4 +1,3 @@
-# Copyright (C) 2024 Apple Inc. All Rights Reserved.
 from types import MethodType
 from typing import List, Optional, Tuple, Union
 
@@ -6,9 +5,9 @@ import torch
 import transformers
 from transformers.cache_utils import Cache
 from transformers.modeling_outputs import CausalLMOutputWithPast
-from transformers.models.phi3.modeling_phi3 import (
+from transformers.models.qwen2.modeling_qwen2 import (
     _CONFIG_FOR_DOC,
-    PHI3_INPUTS_DOCSTRING,
+    QWEN2_INPUTS_DOCSTRING,
     KwargsForCausalLM,
     Unpack,
 )
@@ -22,7 +21,7 @@ from .utils import PatchOptions, TransformersModelT, apply_lce
 _PATCH_OPTS: PatchOptions | None = None
 
 
-@add_start_docstrings_to_model_forward(PHI3_INPUTS_DOCSTRING)
+@add_start_docstrings_to_model_forward(QWEN2_INPUTS_DOCSTRING)
 @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
 def cce_forward(
     self,
@@ -57,19 +56,20 @@ def cce_forward(
     Example:
 
     ```python
-    >>> from transformers import AutoTokenizer, Phi3ForCausalLM
+    >>> from transformers import AutoTokenizer, Qwen2ForCausalLM
 
-    >>> model = Phi3ForCausalLM.from_pretrained("microsoft/phi-3-mini-4k-instruct")
-    >>> tokenizer = AutoTokenizer.from_pretrained("microsoft/phi-3-mini-4k-instruct")
+    >>> model = Qwen2ForCausalLM.from_pretrained(PATH_TO_CONVERTED_WEIGHTS)
+    >>> tokenizer = AutoTokenizer.from_pretrained(PATH_TO_CONVERTED_TOKENIZER)
 
-    >>> prompt = "This is an example script ."
+    >>> prompt = "Hey, are you conscious? Can you talk to me?"
     >>> inputs = tokenizer(prompt, return_tensors="pt")
 
     >>> # Generate
     >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
     >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-    'This is an example script .\n Certainly! Below is a sample script that demonstrates a simple task, such as calculating the sum'
+    "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
     ```"""
+
     output_attentions = (
         output_attentions if output_attentions is not None else self.config.output_attentions
     )
@@ -79,7 +79,6 @@ def cce_forward(
         else self.config.output_hidden_states
     )
     return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
     outputs = self.model(
         input_ids=input_ids,
@@ -104,7 +103,6 @@ def cce_forward(
         loss = apply_lce(hidden_states, self.lm_head.weight, labels, _PATCH_OPTS, **kwargs)
     else:
         logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :])
-
         if labels is not None:
             loss = self.loss_function(logits, labels, self.vocab_size, **kwargs)
 
@@ -121,20 +119,20 @@ def cce_forward(
     )
 
 
-def patch_phi3(
+def patch_qwen2(
     maybe_model: TransformersModelT | str | transformers.PretrainedConfig,
     patch_options: PatchOptions,
 ) -> TransformersModelT | None:
     global _PATCH_OPTS
-    from transformers.models.phi3 import modeling_phi3
+    from transformers.models.qwen2 import modeling_qwen2
 
     _PATCH_OPTS = patch_options
 
     if isinstance(maybe_model, transformers.PreTrainedModel):
         assert isinstance(
-            maybe_model, modeling_phi3.Phi3ForCausalLM
-        ), f"Expected a Phi3ForCausalLM model. Got {type(maybe_model)}."
+            maybe_model, modeling_qwen2.Qwen2ForCausalLM
+        ), f"Expected a Gemma2ForCausalLM model. Got {type(maybe_model)}."
         maybe_model.forward = MethodType(cce_forward, maybe_model)
         return maybe_model
     else:
-        modeling_phi3.Phi3ForCausalLM.forward = cce_forward
+        modeling_qwen2.Qwen2ForCausalLM.forward = cce_forward

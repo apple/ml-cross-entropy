@@ -54,7 +54,7 @@ shift_labels = labels[..., 1:]
 manual_shift_loss = linear_cross_entropy(shift_embeddings, classifier, shift_labels)
 ```
 
-Instead, pass `shift=True` to perform this computation without allocating the shift_embeddings matrix.
+Instead, pass `shift=1` to perform this computation without allocating the shift_embeddings matrix.
 ```python
 from cut_cross_entropy import linear_cross_entropy
 
@@ -62,7 +62,7 @@ embeddings = model.compute_embedding(inputs)
 classifier = model.get_classifier_weights()
 
 # This is the same as manual_shift_loss above
-auto_shift_loss = linear_cross_entropy(embeddings, classifier, labels, shift=True)
+auto_shift_loss = linear_cross_entropy(embeddings, classifier, labels, shift=1)
 ```
 
 We also provide a highly optimized implementation of linear-cross-entropy loss using `torch.compile`.
@@ -79,6 +79,52 @@ classifier = model.get_classifier_weights()
 
 loss = linear_cross_entropy(embeddings, classifier, labels, ..., impl="torch_compile")
 ```
+
+
+There are several different
+
+
+### Computing Related Quantities
+
+`linear_cross_entropy` can be used as an efficient way to compute the negative log likelihood
+of a specified token. This can be used to compute various quantities.
+
+
+```python
+from cut_cross_entropy import linear_cross_entropy
+
+
+# linear_cross_entropy computes negative log likelihood for a target token
+nll = linear_cross_entropy(embeddings, classifier, target_token, reduction="none")
+
+# Perplexity
+ppl = torch.exp(nll.mean(-1))
+
+# DPO (beta and reference omitted)
+dpo_loss = -F.logsigmoid(nll[dispreferred].sum(-1) - nll[preferred].sum(-1))
+
+# PPO
+ppo_loss = -torch.minimum(toch.exp(-nll - old_logp) * adv, adv + eps * adv.abs())
+```
+
+
+### Generalized Usage
+
+While we have discussed using CCE in the context of large language models, the only constraint
+to use CCE is that loss can be formulated using something that resembles following:
+
+```python
+logits = X @ A.T + b  # (b is an optional bias)
+loss = F.cross_entropy(logits.float(), targets)
+```
+
+Given that format, CCE can then be used as
+```python
+loss = linear_cross_entropy(X, A, target_token, bias=b)
+```
+
+This is a very general and encompasses vision models, contrastive losses, e.g. CLIP, etc.
+
 
 ### Transformers Integration
 
@@ -192,16 +238,15 @@ export PYTHONPATH=/path/to/ml-cross-entropy:${PYTHONPATH}
 ## Citation
 
 ```
-@article{wijmans2024cut,
+@inproceedings{wijmans2025cut,
   author       = {Erik Wijmans and
                   Brody Huval and
                   Alexander Hertzberg and
                   Vladlen Koltun and
                   Philipp Kr\"ahenb\"uhl},
   title        = {Cut Your Losses in Large-Vocabulary Language Models},
-  journal      = {arXiv},
-  year         = {2024},
-  url          = {https://arxiv.org/abs/2411.09009},
+  booktitle    = {International Conference on Learning Representations},
+  year         = {2025},
 }
 ```
 

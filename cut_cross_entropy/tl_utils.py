@@ -1,4 +1,8 @@
 # Copyright (C) 2024 Apple Inc. All Rights Reserved.
+import functools
+import importlib.metadata
+
+import packaging.version
 import triton
 import triton.language as tl
 from triton.language.extra import libdevice as tl_libdevice
@@ -88,3 +92,15 @@ def b_bin_fn(b: int) -> int:
         return 128
     else:
         return 512
+
+
+@functools.cache
+def is_triton_greater_or_equal(version: str) -> bool:
+    return packaging.version.parse(importlib.metadata.version("triton")) >= packaging.version.parse(
+        version
+    )
+
+
+@functools.cache
+def is_triton_greater_or_equal_3_2_0() -> bool:
+    return is_triton_greater_or_equal("3.2.0")

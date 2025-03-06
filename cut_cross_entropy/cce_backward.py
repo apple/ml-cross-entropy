@@ -6,6 +6,7 @@ import triton.language as tl
 from cut_cross_entropy.tl_autotune import cce_backward_autotune
 from cut_cross_entropy.tl_utils import (
     b_bin_fn,
+    is_triton_greater_or_equal_3_2_0,
     tl_and_reduce_fn,
     tl_lock_add,
     tl_lock_kahan_sum,
@@ -118,11 +119,13 @@ def _cce_backward_kernel(
     HAS_BIAS: tl.constexpr,
     HAS_VALIDS: tl.constexpr,
     HAS_VOCAB_ORDERING: tl.constexpr,
-    FILTER_GRAD: tl.constexpr,
+    FILTER_E_GRAD: tl.constexpr,
+    FILTER_C_GRAD: tl.constexpr,
     HAS_TARGETS: tl.constexpr,
     HAS_SOFTCAP: tl.constexpr,
     HAS_SHIFT: tl.constexpr,
-    USE_KAHAN: tl.constexpr,
+    KAHAN_E: tl.constexpr,
+    KAHAN_C: tl.constexpr,
     COMPUTE_DC: tl.constexpr,
     COMPUTE_DE: tl.constexpr,
     COMPUTE_DBIAS: tl.constexpr,
@@ -199,9 +202,12 @@ def _cce_backward_kernel(
     else:
         is_target = None
 
-    if FILTER_GRAD:
+    should_skip = False
+    if (FILTER_E_GRAD and COMPUTE_DE) and (FILTER_C_GRAD and COMPUTE_DC):
         if _block_is_filtered(tl.abs(d_accum), filter_eps):
             return
+    elif (FILTER_E_GRAD and COMPUTE_DE) or (FILTER_C_GRAD and COMPUTE_DC):
+        should_skip = _block_is_filtered(tl.abs(d_accum), filter_eps)
 
     if HAS_SOFTCAP:
         d_accum = tl_softcapping_grad(d_accum, accum, softcap)
@@ -226,44 +232,56 @@ def _cce_backward_kernel(
     d_accum = d_accum.to(e_ptrs.dtype.element_ty)
 
     if COMPUTE_DE:
-        lock_offset = (pid_b // tl.cdiv(B, BLOCK_B * n_de_locks_0)) * n_de_locks_1
+        if FILTER_E_GRAD:
+            should_skip_e = should_skip
+        else:
+            should_skip_e = False
 
-        _mm_backward(
-            d_accum,
-            dE + (offs_b[:, None] * stride_eb),
-            dEC + (offs_b[:, None] * stride_eb) if USE_KAHAN else None,
-            offs_b[:, None] < BMax,
-            dELocks + lock_offset,
-            n_de_locks_1,
-            C + offs_v[:, None] * stride_cv,
-            offs_v[:, None] < V,
-            stride_ed,
-            stride_cd,
-            D,
-            MM_BACK_BLOCK_D,
-            MM_BACK_EVEN_D,
-            USE_KAHAN,
-        )
+        if not should_skip_e:
+            lock_offset = (pid_b // tl.cdiv(B, BLOCK_B * n_de_locks_0)) * n_de_locks_1
+
+            _mm_backward(
+                d_accum,
+                dE + (offs_b[:, None] * stride_eb),
+                dEC + (offs_b[:, None] * stride_eb) if KAHAN_E else None,
+                offs_b[:, None] < BMax,
+                dELocks + lock_offset,
+                n_de_locks_1,
+                C + offs_v[:, None] * stride_cv,
+                offs_v[:, None] < V,
+                stride_ed,
+                stride_cd,
+                D,
+                MM_BACK_BLOCK_D,
+                MM_BACK_EVEN_D,
+                KAHAN_E,
+            )
 
     if COMPUTE_DC:
-        lock_offset = (pid_v // tl.cdiv(V, BLOCK_V * n_dc_locks_0)) * n_dc_locks_1
+        if FILTER_C_GRAD:
+            should_skip_c = should_skip
+        else:
+            should_skip_c = False
 
-        _mm_backward(
-            tl.trans(d_accum),
-            dC + (offs_v[:, None] * stride_cv),
-            dCC + (offs_v[:, None] * stride_cv) if USE_KAHAN else None,
-            offs_v[:, None] < V,
-            dCLocks + lock_offset,
-            n_dc_locks_1,
-            E + (offs_b[:, None] * stride_eb),
-            offs_b[:, None] < BMax,
-            stride_cd,
-            stride_ed,
-            D,
-            MM_BACK_BLOCK_D,
-            MM_BACK_EVEN_D,
-            USE_KAHAN,
-        )
+        if not should_skip_c:
+            lock_offset = (pid_v // tl.cdiv(V, BLOCK_V * n_dc_locks_0)) * n_dc_locks_1
+
+            _mm_backward(
+                tl.trans(d_accum),
+                dC + (offs_v[:, None] * stride_cv),
+                dCC + (offs_v[:, None] * stride_cv) if KAHAN_C else None,
+                offs_v[:, None] < V,
+                dCLocks + lock_offset,
+                n_dc_locks_1,
+                E + (offs_b[:, None] * stride_eb),
+                offs_b[:, None] < BMax,
+                stride_cd,
+                stride_ed,
+                D,
+                MM_BACK_BLOCK_D,
+                MM_BACK_EVEN_D,
+                KAHAN_C,
+            )
 
 
 def _cce_back_block_d(args) -> int:
@@ -280,7 +298,6 @@ _cce_backward_kernel = triton.heuristics(  # type: ignore
         "HAS_VALIDS": lambda args: args["Valids"] is not None,
         "HAS_BIAS": lambda args: args["Bias"] is not None,
         "HAS_VOCAB_ORDERING": lambda args: args["VocabOrdering"] is not None,
-        "FILTER_GRAD": lambda args: args["filter_eps"] is not None,
         "HAS_TARGETS": lambda args: args["Targets"] is not None,
         "HAS_SOFTCAP": lambda args: args["softcap"] is not None,
         "HAS_SHIFT": lambda args: args["shift"] != 0,
@@ -288,6 +305,8 @@ _cce_backward_kernel = triton.heuristics(  # type: ignore
         "GROUP_B": lambda args: 8,
         "COMPUTE_DC": lambda args: args["dC"] is not None,
         "COMPUTE_DE": lambda args: args["dE"] is not None,
+        "KAHAN_E": lambda args: args["dEC"] is not None,
+        "KAHAN_C": lambda args: args["dCC"] is not None,
         "COMPUTE_DBIAS": lambda args: args["dBias"] is not None,
     }
 )(_cce_backward_kernel)
@@ -307,7 +326,10 @@ def cce_backward_kernel(
     shift: int = 0,
     vocab_ordering: torch.Tensor | None = None,
     grad_scale: float = 1.0,
-    use_kahan: bool = False,
+    accum_e_fp32: bool = False,
+    accum_c_fp32: bool = False,
+    filter_e_grad: bool = True,
+    filter_c_grad: bool = True,
 ) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
     assert do.numel() in (e.size(0), 1)
     assert c.size(1) == e.size(1)
@@ -324,8 +346,16 @@ def cce_backward_kernel(
     do = do.contiguous()
     lse = lse.contiguous()
 
-    de = torch.zeros_like(e) if e.requires_grad else None
-    dc = torch.zeros_like(c) if c.requires_grad else None
+    can_use_fp32_accum = is_triton_greater_or_equal_3_2_0()
+
+    de_dtype = torch.float32 if (accum_e_fp32 and can_use_fp32_accum) else None
+    de = torch.zeros_like(e, dtype=de_dtype) if e.requires_grad else None
+
+    dc_dtype = torch.float32 if (accum_c_fp32 and can_use_fp32_accum) else None
+    dc = torch.zeros_like(c, dtype=dc_dtype) if c.requires_grad else None
+
+    accum_e_fp32 = accum_e_fp32 and de is not None
+    accum_c_fp32 = accum_c_fp32 and dc is not None
 
     if bias is not None:
         dbias = torch.zeros_like(bias, dtype=torch.float32) if bias.requires_grad else None
@@ -342,11 +372,14 @@ def cce_backward_kernel(
         assert bias is not None
         assert dbias.stride() == bias.stride()
 
-    if use_kahan:
+    if accum_e_fp32 and not can_use_fp32_accum:
         dec = torch.zeros_like(e) if de is not None else None
-        dcc = torch.zeros_like(c) if dc is not None else None
     else:
         dec = None
+
+    if accum_c_fp32 and not can_use_fp32_accum:
+        dcc = torch.zeros_like(c) if dc is not None else None
+    else:
         dcc = None
 
     if dec is not None:
@@ -422,11 +455,18 @@ def cce_backward_kernel(
         filter_eps,
         shift=shift,
         B_BIN=b_bin_fn(B),
-        USE_KAHAN=use_kahan,
+        FILTER_E_GRAD=filter_e_grad and de is not None,
+        FILTER_C_GRAD=filter_c_grad and dc is not None,
     )
 
     if dbias is not None:
         assert bias is not None
         dbias = dbias.to(dtype=bias.dtype)
+
+    if dc is not None:
+        dc = dc.to(dtype=c.dtype)
+
+    if de is not None:
+        de = de.to(dtype=e.dtype)
 
     return de, dc, dbias

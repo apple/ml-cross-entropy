@@ -4,7 +4,6 @@ from typing import Optional, Tuple, Union
 
 import torch
 import transformers
-from torch.nn import CrossEntropyLoss
 from transformers.cache_utils import HybridCache
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.models.gemma2.modeling_gemma2 import (
@@ -14,13 +13,10 @@ from transformers.models.gemma2.modeling_gemma2 import (
 )
 from transformers.utils import (
     add_start_docstrings_to_model_forward,
-    is_torchdynamo_compiling,
     replace_return_docstrings,
 )
 
-from cut_cross_entropy import linear_cross_entropy
-
-from .utils import PatchOptions, TransformersModelT
+from .utils import PatchOptions, TransformersModelT, apply_lce
 
 _PATCH_OPTS: PatchOptions | None = None
 
@@ -41,6 +37,7 @@ def cce_forward(
     return_dict: Optional[bool] = None,
     cache_position: Optional[torch.LongTensor] = None,
     num_logits_to_keep: int = 0,
+    **loss_kwargs,
 ) -> Union[Tuple, CausalLMOutputWithPast]:
     r"""
     Args:
@@ -99,26 +96,17 @@ def cce_forward(
         output_hidden_states=output_hidden_states,
         return_dict=return_dict,
         cache_position=cache_position,
+        **loss_kwargs,
     )
 
     hidden_states = outputs[0]
     loss = None
     logits = None
 
-    if labels is not None and _PATCH_OPTS is not None:
-        loss = linear_cross_entropy(
-            hidden_states,
-            self.lm_head.weight,
-            labels.to(hidden_states.device),
-            softcap=self.config.final_logit_softcapping,
-            shift=True,
-            **_PATCH_OPTS.to_kwargs(),
-        )
+    if _PATCH_OPTS is not None and _PATCH_OPTS.use_lce(labels, self.training):
+        assert labels is not None
+        loss = apply_lce(hidden_states, self.lm_head.weight, labels, _PATCH_OPTS, **loss_kwargs)
     else:
-        if labels is None and not is_torchdynamo_compiling():
-            logger.warning_once(
-                "Starting from v4.46, the `logits` model output will have the same type as the model (except at train time, where it will always be FP32)"
-            )
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
         logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :])
         if self.config.final_logit_softcapping is not None:
@@ -126,22 +114,8 @@ def cce_forward(
             logits = torch.tanh(logits)
             logits = logits * self.config.final_logit_softcapping
 
-        # TODO: remove the float() operation in v4.46
-        logits = logits.float()
-        loss = None
         if labels is not None:
-            # Upcast to float if we need to compute the loss to avoid potential precision issues
-            logits = logits.float()
-            # Shift so that tokens < n predict n
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            # Flatten the tokens
-            loss_fct = CrossEntropyLoss()
-            shift_logits = shift_logits.view(-1, self.config.vocab_size)
-            shift_labels = shift_labels.view(-1)
-            # Enable model parallelism
-            shift_labels = shift_labels.to(shift_logits.device)
-            loss = loss_fct(shift_logits, shift_labels)
+            loss = self.loss_function(logits, labels, self.vocab_size, **loss_kwargs)
 
     if not return_dict:
         output = (logits,) + outputs[1:]

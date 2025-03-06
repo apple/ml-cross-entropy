@@ -25,7 +25,10 @@ class CCEParams:
     filter_eps: float | None
     shift: int
     batch_shape: torch.Size
-    use_kahan: bool
+    accum_e_fp32: bool
+    accum_c_fp32: bool
+    filter_e_grad: bool
+    filter_c_grad: bool
 
 
 @torch.compile(fullgraph=True, dynamic=True)
@@ -125,7 +128,10 @@ class LinearCrossEntropyFunction(torch.autograd.Function):
             shift=params.shift,
             vocab_ordering=vocab_ordering,
             grad_scale=grad_scale,
-            use_kahan=params.use_kahan,
+            accum_e_fp32=params.accum_e_fp32,
+            accum_c_fp32=params.accum_c_fp32,
+            filter_e_grad=params.filter_e_grad,
+            filter_c_grad=params.filter_c_grad,
         )
 
         return de, dc, dbias, None
@@ -158,7 +164,10 @@ def cce_linear_cross_entropy(
     reduction: str = "mean",
     shift: bool | int = 0,
     filter_eps: float | str | None = "auto",
-    use_kahan: bool = False,
+    accum_e_fp32: bool = False,
+    accum_c_fp32: bool = False,
+    filter_e_grad: bool = True,
+    filter_c_grad: bool = True,
 ) -> torch.Tensor:
     assert e.size()[0:-1] == targets.size()
     assert e.size(-1) == c.size(1)
@@ -196,6 +205,9 @@ def cce_linear_cross_entropy(
             _handle_eps(filter_eps, e.dtype),
             shift,
             batch_shape,
-            use_kahan,
+            accum_e_fp32,
+            accum_c_fp32,
+            filter_e_grad=filter_e_grad and filter_eps is not None,
+            filter_c_grad=filter_c_grad and filter_eps is not None,
         ),
     )
