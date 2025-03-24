@@ -13,6 +13,14 @@ from .phi3 import patch_phi3
 from .qwen2 import patch_qwen2
 from .utils import PatchOptions, TransformersModelT
 
+PATCH_FNS = {
+    "llama": patch_llama,
+    "phi3": patch_phi3,
+    "gemma2": patch_gemma2,
+    "mistral": patch_mistral,
+    "qwen2": patch_qwen2,
+}
+
 
 @overload
 def cce_patch(
@@ -77,16 +85,7 @@ def cce_patch(
         train_only=train_only,
     )
 
-    match model_type:
-        case "llama":
-            return patch_llama(model_type_or_model, patch_options)
-        case "phi3":
-            return patch_phi3(model_type_or_model, patch_options)
-        case "gemma2":
-            return patch_gemma2(model_type_or_model, patch_options)
-        case "mistral":
-            return patch_mistral(model_type_or_model, patch_options)
-        case "qwen2":
-            return patch_qwen2(model_type_or_model, patch_options)
-        case _:
-            raise RuntimeError(f"Unknown model type {model_type}")
+    if model_type in PATCH_FNS:
+        return PATCH_FNS[model_type](model_type_or_model, patch_options)
+    else:
+        raise RuntimeError(f"Unknown model type {model_type}")

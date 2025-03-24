@@ -3,9 +3,10 @@ name = "cut-cross-entropy"
 dynamic = ["version"]
 readme = "README.md"
 description = "Code for cut cross entropy, a memory efficient implementation of linear-cross-entropy loss."
-requires-python = ">= 3.10"
+requires-python = ">= 3.9"
 
 dependencies = [
+    "setuptools>=77.0.3",
     "torch>=2.4",
     'triton>=3.0.0 ; platform_system != "Darwin"',
 ]

@@ -8,15 +8,14 @@ def softcapping(logits: torch.Tensor, softcap: float) -> torch.Tensor:
 
 
 def _handle_eps(filter_eps: float | str | None, dtype: torch.dtype) -> float | None:
-    match filter_eps:
-        case None:
-            return None
-        case float():
-            return filter_eps
-        case "auto":
-            return torch.finfo(dtype).eps / 32
-        case _:
-            raise RuntimeError(f"Unknown eps {filter_eps=}")
+    if filter_eps is None:
+        return None
+    elif isinstance(filter_eps, float):
+        return filter_eps
+    elif filter_eps == "auto":
+        return torch.finfo(dtype).eps / 32
+    else:
+        raise RuntimeError(f"Unknown eps {filter_eps=}")
 
 
 def _build_flat_valids(

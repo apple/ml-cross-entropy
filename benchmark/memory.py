@@ -16,13 +16,12 @@ def mem_delta(s1, s0):
 
 def calc_tensor_memory_usage(t: torch.Tensor | Iterable[torch.Tensor]) -> float:
     mem = 0.0
-    match t:
-        case torch.Tensor():
-            mem += t.numel() * torch.finfo(t.dtype).bits / 8
-        case Iterable():
-            mem += sum(calc_tensor_memory_usage(v) for v in t)
-        case _:
-            raise RuntimeError(f"Unknown return type {type(t)}")
+    if isinstance(t, torch.Tensor):
+        mem += t.numel() * torch.finfo(t.dtype).bits / 8
+    elif isinstance(t, Iterable):
+        mem += sum(calc_tensor_memory_usage(v) for v in t)
+    else:
+        raise RuntimeError(f"Unknown return type {type(t)}")
 
     return mem
 
