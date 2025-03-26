@@ -9,6 +9,7 @@ from cut_cross_entropy.cce_utils import CCEPreset, CCEPresets, LinearCrossEntrop
 from cut_cross_entropy.constants import IGNORE_INDEX
 from cut_cross_entropy.doc import CCE_OPTS_DOC, IMPL_DOC, LINEAR_CROSS_ENTROPY_DOC, add_doc_start
 from cut_cross_entropy.torch_compile import torch_compile_linear_cross_entropy
+from cut_cross_entropy.utils import is_torch_greater_or_equal_2_5
 
 PLATFORM_SYSTEM = platform.system()
 
@@ -19,6 +20,17 @@ if TYPE_CHECKING or PLATFORM_SYSTEM != "Darwin":
 else:
     cce_linear_cross_entropy = None
     LCE_IMPL_DEFAULT = LinearCrossEntropyImpl.TORCH_COMPILE
+
+if TYPE_CHECKING or is_torch_greater_or_equal_2_5():
+    import torch.distributed.tensor
+
+
+is_d_tensor_error_message = (
+    "Received {name} as a torch.distributed.tensor.DTensor. "
+    "This is not supported. "
+    "If possible, change the sharding strategy such that {name} is already unsharded. "
+    "If not, use `.full_tensor()` to unshard {name} before passing to linear_cross_entropy."
+)
 
 
 @add_doc_start(LINEAR_CROSS_ENTROPY_DOC)
@@ -43,6 +55,19 @@ def linear_cross_entropy(
     """
     :param impl: The linear cross entropy implementation to use. Currently supports cce, torch_compile, and cce_exact.
     """
+
+    if is_torch_greater_or_equal_2_5():
+        if isinstance(e, torch.distributed.tensor.DTensor):
+            raise ValueError(is_d_tensor_error_message.format(name="e"))
+
+        if isinstance(c, torch.distributed.tensor.DTensor):
+            raise ValueError(is_d_tensor_error_message.format(name="c"))
+
+        if isinstance(targets, torch.distributed.tensor.DTensor):
+            raise ValueError(is_d_tensor_error_message.format(name="targets"))
+
+        if isinstance(bias, torch.distributed.tensor.DTensor):
+            raise ValueError(is_d_tensor_error_message.format(name="bias"))
 
     if isinstance(impl, LinearCrossEntropyImpl):
         impl = impl.name.lower()
