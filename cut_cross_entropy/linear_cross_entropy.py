@@ -57,17 +57,10 @@ def linear_cross_entropy(
     """
 
     if is_torch_greater_or_equal_2_5():
-        if isinstance(e, torch.distributed.tensor.DTensor):
-            raise ValueError(is_d_tensor_error_message.format(name="e"))
-
-        if isinstance(c, torch.distributed.tensor.DTensor):
-            raise ValueError(is_d_tensor_error_message.format(name="c"))
-
-        if isinstance(targets, torch.distributed.tensor.DTensor):
-            raise ValueError(is_d_tensor_error_message.format(name="targets"))
-
-        if isinstance(bias, torch.distributed.tensor.DTensor):
-            raise ValueError(is_d_tensor_error_message.format(name="bias"))
+        maybe_tensor_inputs = dict(e=e, c=c, targets=targets, bias=bias)
+        for k, v in maybe_tensor_inputs.items():
+            if isinstance(v, torch.distributed.tensor.DTensor):
+                raise ValueError(is_d_tensor_error_message.format(name=k))
 
     if isinstance(impl, LinearCrossEntropyImpl):
         impl = impl.name.lower()
