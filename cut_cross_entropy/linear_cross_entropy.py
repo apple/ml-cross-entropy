@@ -29,7 +29,7 @@ is_d_tensor_error_message = (
     "Received {name} as a torch.distributed.tensor.DTensor. "
     "This is not supported. "
     "If possible, change the sharding strategy such that {name} is already unsharded. "
-    "If not, use `.full_tensor()` to unshard {name} before passing to linear_cross_entropy."
+    "If not, see https://github.com/apple/ml-cross-entropy/issues/31."
 )
 
 
