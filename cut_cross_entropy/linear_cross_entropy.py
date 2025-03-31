@@ -10,6 +10,7 @@ from cut_cross_entropy.constants import IGNORE_INDEX
 from cut_cross_entropy.doc import CCE_OPTS_DOC, IMPL_DOC, LINEAR_CROSS_ENTROPY_DOC, add_doc_start
 from cut_cross_entropy.torch_compile import torch_compile_linear_cross_entropy
 from cut_cross_entropy.utils import is_torch_greater_or_equal_2_5
+from cut_cross_entropy.vocab_parallel import VocabParallelOptions
 
 PLATFORM_SYSTEM = platform.system()
 
@@ -51,6 +52,7 @@ def linear_cross_entropy(
     filter_e_grad: bool = True,
     filter_c_grad: bool = True,
     impl: str | LinearCrossEntropyImpl = LCE_IMPL_DEFAULT,
+    vocab_parallel_options: VocabParallelOptions | None = None,
 ) -> torch.Tensor:
     """
     :param impl: The linear cross entropy implementation to use. Currently supports cce, torch_compile, and cce_exact.

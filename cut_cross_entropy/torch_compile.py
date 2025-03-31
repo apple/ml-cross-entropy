@@ -9,9 +9,13 @@ from cut_cross_entropy.utils import (
     handle_reduction_none,
     softcapping,
 )
+from cut_cross_entropy.vocab_parallel import (
+    VocabParallelOptions,
+    vocab_parallel_torch_compile_lce_apply,
+)
 
 
-@torch.compile(fullgraph=True, dynamic=True)
+@torch.compile(fullgraph=True)
 def torch_compile_linear_cross_entropy_apply(
     e: torch.Tensor,
     c: torch.Tensor,
@@ -45,6 +49,7 @@ def torch_compile_linear_cross_entropy(
     softcap: float | None = None,
     reduction: str = "mean",
     shift: bool | int = 0,
+    vocab_parallel_options: VocabParallelOptions | None = None,
 ) -> torch.Tensor:
     assert e.size()[0:-1] == targets.size()
     assert e.size(-1) == c.size(1)
@@ -63,15 +68,20 @@ def torch_compile_linear_cross_entropy(
         e = e[valids]
         targets = targets[(valids + shift) if shift != 0 else valids]
 
-    loss = torch_compile_linear_cross_entropy_apply(
-        e,
-        c,
-        targets,
-        bias,
-        softcap,
-        ignore_index=ignore_index,
-        reduction=reduction,
-    )
+    if vocab_parallel_options is None:
+        loss = torch_compile_linear_cross_entropy_apply(
+            e,
+            c,
+            targets,
+            bias,
+            softcap,
+            ignore_index=ignore_index,
+            reduction=reduction,
+        )
+    else:
+        loss = vocab_parallel_torch_compile_lce_apply(
+            vocab_parallel_options, e, c, targets, bias, softcap, reduction
+        )
 
     if reduction == "none":
         loss = handle_reduction_none(orig_b_size, valids, shift, loss)
