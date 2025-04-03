@@ -2,52 +2,52 @@
 import torch
 import torch.distributed
 
-from cut_cross_entropy.utils import (
-    softcapping,
+from cut_cross_entropy.utils import softcapping
+from cut_cross_entropy.vocab_parallel.utils import (
+    VocabParallelOptions,
+    vp_reduce_correct_logit,
+    vp_reduce_lse,
 )
-from cut_cross_entropy.vocab_parallel.vocab_parallel_lce import VocabParallelOptions
 
 
 class _VocabParallelLossFn(torch.autograd.Function):
     @staticmethod
     def forward(
         ctx,
-        correct_logit: torch.Tensor,
-        lse: torch.Tensor,
-        this_weight: float,
+        vp_correct_logit: torch.Tensor,
+        vp_lse: torch.Tensor,
         pg: torch.distributed.ProcessGroup | None,
     ) -> torch.Tensor:
-        lse = lse.clone()
-        correct_logit = correct_logit.clone()
+        lse = vp_reduce_lse(vp_lse, pg)
+        correct_logit = vp_reduce_correct_logit(vp_correct_logit, pg, dtype=lse.dtype)
 
-        lse_max = lse.clone()
-        torch.distributed.all_reduce(lse_max, op=torch.distributed.ReduceOp.MAX, group=pg)
+        ctx.save_for_backward(vp_lse, lse)
 
-        lse = (lse - lse_max).exp() * this_weight
-        torch.distributed.all_reduce(lse, group=pg)
-        lse = lse_max + lse.log()
-
-        torch.distributed.all_reduce(correct_logit, group=pg)
-        return lse - correct_logit.type_as(lse)
+        return lse - correct_logit
 
     @staticmethod
     def backward(
-        ctx, grad_loss: torch.Tensor | None
-    ) -> tuple[torch.Tensor | None, torch.Tensor | None, None, None]:
-        return (-grad_loss if grad_loss is not None else None, grad_loss, None, None)
+        ctx, grad_loss: torch.Tensor
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None, None]:
+        grad_correct_logit = -grad_loss
+
+        vp_lse, lse = ctx.saved_tensors
+
+        grad_lse = (vp_lse - lse).exp() * grad_loss
+
+        return grad_correct_logit, grad_lse, None
 
 
 def _vocab_parallel_loss_fn(
-    correct_logit: torch.Tensor,
-    lse: torch.Tensor,
-    this_weight: float,
+    vp_correct_logit: torch.Tensor,
+    vp_lse: torch.Tensor,
     pg: torch.distributed.ProcessGroup | None,
 ) -> torch.Tensor:
-    return _VocabParallelLossFn.apply(correct_logit, lse, this_weight, pg)
+    return _VocabParallelLossFn.apply(vp_correct_logit, vp_lse, pg)
 
 
 @torch.compile(fullgraph=True)
-def _vocab_parallel_torch_compile_lce_apply(
+def _vocab_parallel_torch_compile_correct_logit_lse(
     e: torch.Tensor,
     vocab_parallel_c: torch.Tensor,
     targets: torch.Tensor,
@@ -56,50 +56,28 @@ def _vocab_parallel_torch_compile_lce_apply(
     vocab_parallel_bias: torch.Tensor | None = None,
     softcap: float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    logits = e @ vocab_parallel_c.T
+    vp_logits = e @ vocab_parallel_c.T
 
     if vocab_parallel_bias is not None:
-        logits = logits + vocab_parallel_bias
+        vp_logits = vp_logits + vocab_parallel_bias
 
     if softcap is not None:
-        logits = softcapping(logits, softcap)
+        vp_logits = softcapping(vp_logits, softcap)
 
-    lse = torch.logsumexp(logits.float(), -1)
+    vp_lse = torch.logsumexp(vp_logits.float(), -1)
 
     is_target_in_range = (targets < stop) & (targets >= start)
-    arange_indexer = torch.arange(0, len(lse), device=targets.device, dtype=targets.dtype)
-    masked_targets = torch.where(is_target_in_range, targets, targets.new_zeros(()))
+    arange_indexer = torch.arange(0, len(vp_lse), device=targets.device, dtype=targets.dtype)
+    masked_targets = torch.where(is_target_in_range, targets - start, targets.new_zeros(()))
 
-    correct_logit = torch.where(
-        is_target_in_range, logits[arange_indexer, masked_targets], logits.new_zeros(())
+    vp_correct_logit = torch.where(
+        is_target_in_range, vp_logits[arange_indexer, masked_targets], vp_logits.new_zeros(())
     )
 
-    return correct_logit, lse
+    return vp_correct_logit, vp_lse
 
 
 @torch.compile(fullgraph=True)
-def _vocab_parallel_loss(
-    correct_logit: torch.Tensor,
-    lse: torch.Tensor,
-    this_vocab_size: int,
-    total_vocab_size: int,
-    reduction: str,
-    pg: torch.distributed.ProcessGroup | None,
-) -> torch.Tensor:
-    loss = _vocab_parallel_loss_fn(correct_logit, lse, this_vocab_size / total_vocab_size, pg)
-
-    if reduction == "none":
-        pass
-    elif reduction == "mean":
-        loss = loss.mean()
-    elif reduction == "sum":
-        loss = loss.sum()
-    else:
-        raise ValueError(f"Unknown reduction {reduction!r}")
-
-    return loss
-
-
 def vocab_parallel_torch_compile_lce_apply(
     vocab_parallel_options: VocabParallelOptions,
     e: torch.Tensor,
@@ -111,14 +89,7 @@ def vocab_parallel_torch_compile_lce_apply(
 ) -> torch.Tensor:
     pg = vocab_parallel_options.group
 
-    this_vocab_size = vocab_parallel_options.stop - vocab_parallel_options.start
-    total_vocab_size = vocab_parallel_options.total_vocab_size
-    if total_vocab_size is None:
-        total_vocab_size_t = torch.as_tensor(this_vocab_size, dtype=torch.float32, device=e.device)
-        torch.distributed.all_reduce(total_vocab_size_t, group=pg)
-        total_vocab_size = int(total_vocab_size_t.item())
-
-    correct_logit, lse = _vocab_parallel_torch_compile_lce_apply(
+    vp_correct_logit, vp_lse = _vocab_parallel_torch_compile_correct_logit_lse(
         e,
         vocab_parallel_c,
         targets,
@@ -128,8 +99,15 @@ def vocab_parallel_torch_compile_lce_apply(
         softcap=softcap,
     )
 
-    loss = _vocab_parallel_loss(
-        correct_logit, lse, this_vocab_size, total_vocab_size, reduction, pg=pg
-    )
+    loss = _vocab_parallel_loss_fn(vp_correct_logit, vp_lse, pg)
+
+    if reduction == "none":
+        pass
+    elif reduction == "mean":
+        loss = loss.mean()
+    elif reduction == "sum":
+        loss = loss.sum()
+    else:
+        raise ValueError(f"Unknown reduction {reduction!r}")
 
     return loss

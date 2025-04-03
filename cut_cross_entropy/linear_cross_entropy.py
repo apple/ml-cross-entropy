@@ -76,7 +76,7 @@ def linear_cross_entropy(
                 "CCE does not support MacOS. Please use torch_compile when running on MacOS instead."
             )
 
-        cce_opts = CCEPresets.handle(
+        cce_opts = CCEPresets.build_for_impl(
             impl,
             CCEPreset(
                 filter_eps=filter_eps,
@@ -98,10 +98,19 @@ def linear_cross_entropy(
             reduction,
             shift,
             **cce_opts,
+            vocab_parallel_options=vocab_parallel_options,
         )
     elif impl == "torch_compile":
         return torch_compile_linear_cross_entropy(
-            e, c, targets, bias, ignore_index, softcap, reduction, shift
+            e,
+            c,
+            targets,
+            bias,
+            ignore_index,
+            softcap,
+            reduction,
+            shift,
+            vocab_parallel_options=vocab_parallel_options,
         )
     else:
         raise NotImplementedError(f"{impl} is not implemented.")

@@ -6,7 +6,7 @@ import packaging.version
 import torch
 
 
-@torch.compile(fullgraph=True, dynamic=True)
+@torch.compile(fullgraph=True)
 def softcapping(logits: torch.Tensor, softcap: float) -> torch.Tensor:
     return torch.tanh(logits / softcap) * softcap
 

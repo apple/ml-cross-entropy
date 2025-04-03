@@ -30,7 +30,7 @@ class CCEPresets:
     )
 
     @classmethod
-    def handle(cls, impl: str, opts: CCEPreset) -> CCEPreset:
+    def build_for_impl(cls, impl: str, opts: CCEPreset) -> CCEPreset:
         if impl not in cls.names:
             raise ValueError(f"{impl!r} not in {cls.names}")
 
