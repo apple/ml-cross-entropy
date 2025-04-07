@@ -1,4 +1,8 @@
 # Copyright (C) 2024 Apple Inc. All Rights Reserved.
+import functools
+import importlib.metadata
+
+import packaging.version
 import torch
 
 
@@ -52,3 +56,15 @@ def handle_reduction_none(
     full_loss[(valids + shift) if shift != 0 else valids] = loss
 
     return full_loss.view(batch_shape)
+
+
+@functools.cache
+def is_package_greater_or_equal(package: str, version: str) -> bool:
+    return packaging.version.parse(importlib.metadata.version(package)) >= packaging.version.parse(
+        version
+    )
+
+
+@functools.cache
+def is_torch_greater_or_equal_2_5() -> bool:
+    return is_package_greater_or_equal("torch", "2.5")
