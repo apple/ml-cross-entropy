@@ -137,8 +137,8 @@ def _cce_backward_kernel(
     group_id = pid // num_v_in_group
     first_pid_b = group_id * GROUP_B
     group_size_b = min(num_b_chunks - first_pid_b, GROUP_B)
-    pid_b = first_pid_b + ((pid % num_v_in_group) % group_size_b)
-    pid_v = (pid % num_v_in_group) // group_size_b
+    pid_b = (first_pid_b + ((pid % num_v_in_group) % group_size_b)).to(tl.int64)
+    pid_v = ((pid % num_v_in_group) // group_size_b).to(tl.int64)
 
     offs_b = (pid_b * BLOCK_B + tl.arange(0, BLOCK_B)).to(tl.int64)
     if HAS_VALIDS:

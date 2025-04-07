@@ -16,62 +16,90 @@ from triton.testing import (
     nvsmi,
 )
 
+from cut_cross_entropy.tl_utils import is_triton_greater_or_equal_3_2_0
+
 _AUTOTUNE: bool = os.getenv("CCE_AUTOTUNE", "0") != "0"
 
 
 @dataclass
 class NoneSupportRestorer:
-    reset_idx: list[int]
-    restore_idx: list[int]
-    _restore_copies: list[torch.Tensor | None] = field(default_factory=list, init=False)
+    reset_idx_or_name: list[int | str]
+    restore_idx_or_name: list[int | str]
+    _restore_copies: dict[str | int, torch.Tensor | None] = field(default_factory=dict, init=False)
 
-    def pre_hook(self, args: list[torch.Tensor | None | Any]) -> None:
-        for i in self.reset_idx:
-            v = args[i]
+    def pre_hook(
+        self,
+        args: list[torch.Tensor | None | Any] | dict[str, torch.Tensor | None | Any],
+        reset_only: bool = False,
+    ) -> None:
+        for i in self.reset_idx_or_name:
+            if isinstance(i, str):
+                assert isinstance(args, dict)
+                v = args[i]
+            else:
+                assert isinstance(args, list)
+                v = args[i]
+
             if v is not None:
                 assert isinstance(v, torch.Tensor)
                 v.zero_()
 
-        for i in self.reset_idx:
-            v = args[i]
-            if v is not None:
-                assert isinstance(v, torch.Tensor)
-                self._restore_copies.append(v.clone())
-            else:
-                self._restore_copies.append(None)
+        if not reset_only:
+            for i in self.restore_idx_or_name:
+                if isinstance(i, str):
+                    assert isinstance(args, dict)
+                    v = args[i]
+                else:
+                    assert isinstance(args, list)
+                    v = args[i]
 
-    def post_hook(self, args: list[torch.Tensor | None | Any], _exception) -> None:
-        for j, i in enumerate(self.reset_idx):
-            v = args[i]
+                if v is not None:
+                    assert isinstance(v, torch.Tensor)
+                    self._restore_copies[i] = v.clone()
+                else:
+                    self._restore_copies[i] = None
+
+    def post_hook(
+        self,
+        args: list[torch.Tensor | None | Any] | dict[str, torch.Tensor | None | Any],
+        exception=None,
+    ) -> None:
+        for i, old_v in self._restore_copies.items():
+            if isinstance(i, str):
+                assert isinstance(args, dict)
+                v = args[i]
+            else:
+                assert isinstance(args, list)
+                v = args[i]
+
             if v is not None:
-                old_v = self._restore_copies[j]
                 assert isinstance(v, torch.Tensor)
                 assert old_v is not None
 
                 v.copy_(old_v)
 
-        self._restore_copies = []
+        self._restore_copies = {}
 
 
 @functools.wraps(triton.autotune)
 def _cce_autotune(*args, **kwargs) -> Callable[..., autotuner.Autotuner]:
     def decorator(fn):
-        reset_idx = []
-        restore_idx = []
+        reset_idx_or_name = []
+        restore_idx_or_name = []
         arg_names = fn.arg_names
-        reset_to_zero = kwargs.pop("reset_to_zero", None)
-        if reset_to_zero is not None:
-            reset_idx = [arg_names.index(k) for k in reset_to_zero]
+        reset_idx_or_name = kwargs.pop("reset_to_zero", [])
+        if not is_triton_greater_or_equal_3_2_0():
+            reset_idx_or_name = [arg_names.index(k) for k in restore_idx_or_name]
 
-        restore_value = kwargs.pop("restore_value", None)
-        if restore_value is not None:
-            restore_idx = [arg_names.index(k) for k in restore_value]
+        restore_idx_or_name = kwargs.pop("restore_value", [])
+        if not is_triton_greater_or_equal_3_2_0():
+            restore_idx_or_name = [arg_names.index(k) for k in restore_idx_or_name]
 
-        restorer = NoneSupportRestorer(reset_idx, restore_idx)
-        if len(reset_idx) > 0:
+        restorer = NoneSupportRestorer(reset_idx_or_name, restore_idx_or_name)
+        if len(reset_idx_or_name) > 0:
             kwargs["pre_hook"] = restorer.pre_hook
 
-        if len(restore_idx) > 0:
+        if len(restore_idx_or_name) > 0:
             kwargs["post_hook"] = restorer.post_hook
 
         return triton.autotune(*args, **kwargs)(fn)
