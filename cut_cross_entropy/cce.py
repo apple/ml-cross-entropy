@@ -82,6 +82,8 @@ class LinearCrossEntropyFunction(torch.autograd.Function):
             vp_valids = (
                 ((targets >= vp_opts.start) & (targets < vp_opts.stop)).nonzero().to(torch.int32)
             )
+            assert vp_valids.size(1) == 1
+            vp_valids = vp_valids.squeeze(-1)
 
             if params.valids is not None:
                 neg_dot_valids = params.valids[vp_valids]

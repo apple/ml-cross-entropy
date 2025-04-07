@@ -15,11 +15,6 @@ from cut_cross_entropy.vocab_parallel.utils import partition_n_into_range
 def find_free_port() -> int:
     """
     Returns a free port on the system.
-    Note that this can only be used to find a port for torch.distribted
-    if it's called by a process on the node that will have
-    world_rank == 0 and then all ranks are created. If you
-    just called `find_free_port()` on each rank independently, every
-    rank will have a different port!
     """
     with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

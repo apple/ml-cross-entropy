@@ -10,7 +10,7 @@ from cut_cross_entropy.vocab_parallel.utils import (
 )
 
 
-class _VocabParallelLossFn(torch.autograd.Function):
+class _VocabParallelLossFunction(torch.autograd.Function):
     @staticmethod
     def forward(
         ctx,
@@ -38,16 +38,15 @@ class _VocabParallelLossFn(torch.autograd.Function):
         return grad_correct_logit, grad_lse, None
 
 
-def _vocab_parallel_loss_fn(
+def _vp_loss_fn(
     vp_correct_logit: torch.Tensor,
     vp_lse: torch.Tensor,
     pg: torch.distributed.ProcessGroup | None,
 ) -> torch.Tensor:
-    return _VocabParallelLossFn.apply(vp_correct_logit, vp_lse, pg)
+    return _VocabParallelLossFunction.apply(vp_correct_logit, vp_lse, pg)
 
 
-@torch.compile(fullgraph=True)
-def _vocab_parallel_torch_compile_correct_logit_lse(
+def _vp_torch_compile_correct_logit_lse(
     e: torch.Tensor,
     vocab_parallel_c: torch.Tensor,
     targets: torch.Tensor,
@@ -67,9 +66,9 @@ def _vocab_parallel_torch_compile_correct_logit_lse(
     vp_lse = torch.logsumexp(vp_logits.float(), -1)
 
     is_target_in_range = (targets < stop) & (targets >= start)
-    arange_indexer = torch.arange(0, len(vp_lse), device=targets.device, dtype=targets.dtype)
     masked_targets = torch.where(is_target_in_range, targets - start, targets.new_zeros(()))
 
+    arange_indexer = torch.arange(0, len(vp_lse), device=targets.device, dtype=targets.dtype)
     vp_correct_logit = torch.where(
         is_target_in_range, vp_logits[arange_indexer, masked_targets], vp_logits.new_zeros(())
     )
@@ -89,7 +88,7 @@ def vocab_parallel_torch_compile_lce_apply(
 ) -> torch.Tensor:
     pg = vocab_parallel_options.group
 
-    vp_correct_logit, vp_lse = _vocab_parallel_torch_compile_correct_logit_lse(
+    vp_correct_logit, vp_lse = _vp_torch_compile_correct_logit_lse(
         e,
         vocab_parallel_c,
         targets,
@@ -99,7 +98,7 @@ def vocab_parallel_torch_compile_lce_apply(
         softcap=softcap,
     )
 
-    loss = _vocab_parallel_loss_fn(vp_correct_logit, vp_lse, pg)
+    loss = _vp_loss_fn(vp_correct_logit, vp_lse, pg)
 
     if reduction == "none":
         pass
