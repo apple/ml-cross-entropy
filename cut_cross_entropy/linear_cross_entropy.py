@@ -70,6 +70,16 @@ def linear_cross_entropy(
     if isinstance(shift, int) and (shift < 0 or shift >= targets.size(-1)):
         raise ValueError(f"Shift must be in the range [0, {targets.size(-1)}). Got {shift}.")
 
+    if vocab_parallel_options is not None:
+        expected_v_dim_size = vocab_parallel_options.stop - vocab_parallel_options.start
+        if c.size(0) != expected_v_dim_size:
+            raise ValueError(f"Expected c.size(0) to be {expected_v_dim_size}, got {c.size(0)}.")
+
+    if bias is not None and bias.size(0) != c.size(0):
+        raise ValueError(
+            f"Bias has a different number of elements than c. {bias.size(0)} vs. {c.size(0)}."
+        )
+
     if impl in CCEPresets.names:
         if platform.system() == "Darwin":
             raise RuntimeError(

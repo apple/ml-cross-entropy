@@ -46,6 +46,8 @@ def _target_fn_test_vp(
         backend=backend, store=store, world_size=world_size, rank=rank
     )
 
+    torch.distributed.init_process_group()
+
     N, V, D = (252, 507, 123)
 
     e = torch.randn((N, D), device=device, dtype=dtype) / (D**0.5)
