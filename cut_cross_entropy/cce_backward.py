@@ -142,9 +142,7 @@ def _cce_backward_kernel(
 
     offs_b = pid_b * BLOCK_B + tl.arange(0, BLOCK_B)
     if HAS_VALIDS:
-        offs_b = tl.load(Valids + stride_vb * offs_b.to(tl.int64), mask=offs_b < B, other=BMax).to(
-            tl.int64
-        )
+        offs_b = tl.load(Valids + stride_vb * offs_b.to(tl.int64), mask=offs_b < B, other=BMax)
 
     offs_v = pid_v * BLOCK_V + tl.arange(0, BLOCK_V)
     if HAS_VOCAB_ORDERING:
