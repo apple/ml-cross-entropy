@@ -32,12 +32,12 @@ def _mm_backward(
     EVEN_D: tl.constexpr,
     USE_KAHAN: tl.constexpr,
 ):
-    d_inds = tl.arange(0, BLOCK_D)[None, :]
+    d_inds = tl.arange(0, BLOCK_D)[None, :].to(tl.int64)
 
-    b_ptrs = b_ptrs + d_inds.to(tl.int64) * stride_bd
-    da_ptrs = da_ptrs + d_inds.to(tl.int64) * stride_ad
+    b_ptrs = b_ptrs + d_inds * stride_bd
+    da_ptrs = da_ptrs + d_inds * stride_ad
     if USE_KAHAN:
-        dac_ptrs = dac_ptrs + d_inds.to(tl.int64) * stride_ad
+        dac_ptrs = dac_ptrs + d_inds * stride_ad
 
     for d in range(0, tl.cdiv(D, BLOCK_D)):
         if EVEN_D:
@@ -137,24 +137,20 @@ def _cce_backward_kernel(
     group_id = pid // num_v_in_group
     first_pid_b = group_id * GROUP_B
     group_size_b = min(num_b_chunks - first_pid_b, GROUP_B)
-    pid_b = first_pid_b + ((pid % num_v_in_group) % group_size_b)
-    pid_v = (pid % num_v_in_group) // group_size_b
+    pid_b = (first_pid_b + ((pid % num_v_in_group) % group_size_b)).to(tl.int64)
+    pid_v = ((pid % num_v_in_group) // group_size_b).to(tl.int64)
 
-    offs_b = pid_b * BLOCK_B + tl.arange(0, BLOCK_B)
+    offs_b = (pid_b * BLOCK_B + tl.arange(0, BLOCK_B)).to(tl.int64)
     if HAS_VALIDS:
-        offs_b = tl.load(Valids + stride_vb * offs_b.to(tl.int64), mask=offs_b < B, other=BMax)
+        offs_b = tl.load(Valids + stride_vb * offs_b, mask=offs_b < B, other=BMax).to(tl.int64)
 
-    offs_v = pid_v * BLOCK_V + tl.arange(0, BLOCK_V)
+    offs_v = (pid_v * BLOCK_V + tl.arange(0, BLOCK_V)).to(tl.int64)
     if HAS_VOCAB_ORDERING:
-        offs_v = tl.load(VocabOrdering + offs_v, mask=offs_v < V, other=V)
+        offs_v = tl.load(VocabOrdering + offs_v, mask=offs_v < V, other=V).to(tl.int64)
 
-    offs_d = tl.arange(0, BLOCK_D)
-    e_ptrs = E + (
-        offs_b[:, None].to(tl.int64) * stride_eb + offs_d[None, :].to(tl.int64) * stride_ed
-    )
-    c_ptrs = C + (
-        offs_v[None, :].to(tl.int64) * stride_cv + offs_d[:, None].to(tl.int64) * stride_cd
-    )
+    offs_d = tl.arange(0, BLOCK_D).to(tl.int64)
+    e_ptrs = E + (offs_b[:, None] * stride_eb + offs_d[None, :] * stride_ed)
+    c_ptrs = C + (offs_v[None, :] * stride_cv + offs_d[:, None] * stride_cd)
 
     accum = tl.zeros((BLOCK_B, BLOCK_V), dtype=tl.float32)
     for d in range(0, tl.cdiv(D, BLOCK_D)):
@@ -178,7 +174,7 @@ def _cce_backward_kernel(
     tl.debug_barrier()
 
     if HAS_BIAS:
-        bias = tl.load(Bias + offs_v.to(tl.int64) * stride_biasv, mask=offs_v < V, other=0.0)
+        bias = tl.load(Bias + offs_v * stride_biasv, mask=offs_v < V, other=0.0)
         bias = bias.to(dtype=accum.dtype)
         accum += bias[None, :]
 
@@ -186,7 +182,7 @@ def _cce_backward_kernel(
         accum = tl_softcapping(accum, softcap)
 
     if HAS_VALIDS:
-        direct_offs_b = pid_b * BLOCK_B + tl.arange(0, BLOCK_B)
+        direct_offs_b = (pid_b * BLOCK_B + tl.arange(0, BLOCK_B)).to(tl.int64)
         lse = tl.load(LSE + direct_offs_b, mask=direct_offs_b < B, other=float("inf"))
     else:
         lse = tl.load(LSE + offs_b, mask=offs_b < B, other=float("inf"))
@@ -246,8 +242,8 @@ def _cce_backward_kernel(
 
             _mm_backward(
                 d_accum,
-                dE + (offs_b[:, None].to(tl.int64) * stride_eb),
-                dEC + (offs_b[:, None].to(tl.int64) * stride_eb) if KAHAN_E else None,
+                dE + (offs_b[:, None] * stride_eb),
+                dEC + (offs_b[:, None] * stride_eb) if KAHAN_E else None,
                 offs_b[:, None] < BMax,
                 dELocks + lock_offset,
                 n_de_locks_1,
@@ -272,8 +268,8 @@ def _cce_backward_kernel(
 
             _mm_backward(
                 tl.trans(d_accum),
-                dC + (offs_v[:, None].to(tl.int64) * stride_cv),
-                dCC + (offs_v[:, None].to(tl.int64) * stride_cv) if KAHAN_C else None,
+                dC + (offs_v[:, None] * stride_cv),
+                dCC + (offs_v[:, None] * stride_cv) if KAHAN_C else None,
                 offs_v[:, None] < V,
                 dCLocks + lock_offset,
                 n_dc_locks_1,
