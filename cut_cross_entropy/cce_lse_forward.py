@@ -50,15 +50,15 @@ def _cce_lse_forward_kernel(
     group_id = pid // num_pid_in_group
     first_pid_b = group_id * GROUP_B
     group_size_b = min(num_pid_b - first_pid_b, GROUP_B)
-    pid_b = first_pid_b + ((pid % num_pid_in_group) % group_size_b)
-    pid_v = (pid % num_pid_in_group) // group_size_b
+    pid_b = (first_pid_b + ((pid % num_pid_in_group) % group_size_b)).to(tl.int64)
+    pid_v = ((pid % num_pid_in_group) // group_size_b).to(tl.int64)
 
-    offs_b = pid_b * BLOCK_B + tl.arange(0, BLOCK_B)
+    offs_b = (pid_b * BLOCK_B + tl.arange(0, BLOCK_B)).to(tl.int64)
     if HAS_VALIDS:
-        offs_b = tl.load(Valids + stride_vb * offs_b, mask=offs_b < B, other=BMax)
+        offs_b = tl.load(Valids + stride_vb * offs_b, mask=offs_b < B, other=BMax).to(tl.int64)
 
-    offs_v = pid_v * BLOCK_V + tl.arange(0, BLOCK_V)
-    offs_d = tl.arange(0, BLOCK_D)
+    offs_v = (pid_v * BLOCK_V + tl.arange(0, BLOCK_V)).to(tl.int64)
+    offs_d = tl.arange(0, BLOCK_D).to(tl.int64)
     e_ptrs = E + (offs_b[:, None] * stride_eb + offs_d[None, :] * stride_ed)
     c_ptrs = C + (offs_v[None, :] * stride_cv + offs_d[:, None] * stride_cd)
 
@@ -100,7 +100,7 @@ def _cce_lse_forward_kernel(
     e = tl.exp(logits - this_mx[:, None])
     this_lse = this_mx + tl.log(tl.sum(e, axis=1))
 
-    offs_b = pid_b * BLOCK_B + tl.arange(0, BLOCK_B)
+    offs_b = (pid_b * BLOCK_B + tl.arange(0, BLOCK_B)).to(tl.int64)
     o_mask = offs_b < B
 
     lse_ptrs = LSE + (stride_lse_b * offs_b)

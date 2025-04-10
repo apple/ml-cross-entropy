@@ -32,7 +32,7 @@ def _mm_backward(
     EVEN_D: tl.constexpr,
     USE_KAHAN: tl.constexpr,
 ):
-    d_inds = tl.arange(0, BLOCK_D)[None, :]
+    d_inds = tl.arange(0, BLOCK_D)[None, :].to(tl.int64)
 
     b_ptrs = b_ptrs + d_inds * stride_bd
     da_ptrs = da_ptrs + d_inds * stride_ad
@@ -137,18 +137,18 @@ def _cce_backward_kernel(
     group_id = pid // num_v_in_group
     first_pid_b = group_id * GROUP_B
     group_size_b = min(num_b_chunks - first_pid_b, GROUP_B)
-    pid_b = first_pid_b + ((pid % num_v_in_group) % group_size_b)
-    pid_v = (pid % num_v_in_group) // group_size_b
+    pid_b = (first_pid_b + ((pid % num_v_in_group) % group_size_b)).to(tl.int64)
+    pid_v = ((pid % num_v_in_group) // group_size_b).to(tl.int64)
 
-    offs_b = pid_b * BLOCK_B + tl.arange(0, BLOCK_B)
+    offs_b = (pid_b * BLOCK_B + tl.arange(0, BLOCK_B)).to(tl.int64)
     if HAS_VALIDS:
-        offs_b = tl.load(Valids + stride_vb * offs_b, mask=offs_b < B, other=BMax)
+        offs_b = tl.load(Valids + stride_vb * offs_b, mask=offs_b < B, other=BMax).to(tl.int64)
 
-    offs_v = pid_v * BLOCK_V + tl.arange(0, BLOCK_V)
+    offs_v = (pid_v * BLOCK_V + tl.arange(0, BLOCK_V)).to(tl.int64)
     if HAS_VOCAB_ORDERING:
-        offs_v = tl.load(VocabOrdering + offs_v, mask=offs_v < V, other=V)
+        offs_v = tl.load(VocabOrdering + offs_v, mask=offs_v < V, other=V).to(tl.int64)
 
-    offs_d = tl.arange(0, BLOCK_D)
+    offs_d = tl.arange(0, BLOCK_D).to(tl.int64)
     e_ptrs = E + (offs_b[:, None] * stride_eb + offs_d[None, :] * stride_ed)
     c_ptrs = C + (offs_v[None, :] * stride_cv + offs_d[:, None] * stride_cd)
 
@@ -182,7 +182,7 @@ def _cce_backward_kernel(
         accum = tl_softcapping(accum, softcap)
 
     if HAS_VALIDS:
-        direct_offs_b = pid_b * BLOCK_B + tl.arange(0, BLOCK_B)
+        direct_offs_b = (pid_b * BLOCK_B + tl.arange(0, BLOCK_B)).to(tl.int64)
         lse = tl.load(LSE + direct_offs_b, mask=direct_offs_b < B, other=float("inf"))
     else:
         lse = tl.load(LSE + offs_b, mask=offs_b < B, other=float("inf"))

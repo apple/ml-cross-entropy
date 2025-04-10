@@ -43,14 +43,14 @@ def _indexed_neg_dot_forward_kernel(
     group_id = pid // num_d_in_group
     first_pid_b = group_id * GROUP_B
     group_size_b = min(num_b_chunks - first_pid_b, GROUP_B)
-    pid_b = first_pid_b + ((pid % num_d_in_group) % group_size_b)
-    pid_d = (pid % num_d_in_group) // group_size_b
+    pid_b = (first_pid_b + ((pid % num_d_in_group) % group_size_b)).to(tl.int64)
+    pid_d = ((pid % num_d_in_group) // group_size_b).to(tl.int64)
 
-    offs_b = tl.arange(0, BLOCK_B) + pid_b * BLOCK_B
+    offs_b = (tl.arange(0, BLOCK_B) + pid_b * BLOCK_B).to(tl.int64)
     if HAS_VALIDS:
-        offs_b = tl.load(Valids + stride_vb * offs_b, mask=offs_b < B, other=BMax)
+        offs_b = tl.load(Valids + stride_vb * offs_b, mask=offs_b < B, other=BMax).to(tl.int64)
 
-    offs_d = tl.arange(0, BLOCK_D) + pid_d * BLOCK_D
+    offs_d = (tl.arange(0, BLOCK_D) + pid_d * BLOCK_D).to(tl.int64)
     e_ptrs = E + (stride_eb * offs_b[:, None] + stride_ed * offs_d[None, :])
 
     e_mask = offs_b[:, None] < BMax
@@ -72,8 +72,6 @@ def _indexed_neg_dot_forward_kernel(
 
     c = tl.load(c_ptrs, mask=c_mask, other=0.0)
 
-    offs_b = tl.arange(0, BLOCK_B) + pid_b * BLOCK_B
-    out_ptrs = Out + offs_b
     dot = e.to(tl.float32) * c.to(tl.float32)
     neg_dot = -tl.sum(dot, 1)
 
@@ -82,6 +80,8 @@ def _indexed_neg_dot_forward_kernel(
         bias = bias.to(tl.float32)
         neg_dot -= bias
 
+    offs_b = (tl.arange(0, BLOCK_B) + pid_b * BLOCK_B).to(tl.int64)
+    out_ptrs = Out + offs_b
     tl.atomic_add(out_ptrs, neg_dot.to(out_ptrs.dtype.element_ty), mask=offs_b < B)
 
 
