@@ -10,6 +10,7 @@ from cut_cross_entropy.constants import IGNORE_INDEX
 from cut_cross_entropy.doc import CCE_OPTS_DOC, IMPL_DOC, LINEAR_CROSS_ENTROPY_DOC, add_doc_start
 from cut_cross_entropy.torch_compile import torch_compile_linear_cross_entropy
 from cut_cross_entropy.utils import is_torch_greater_or_equal_2_5
+from cut_cross_entropy.vocab_parallel import VocabParallelOptions
 
 PLATFORM_SYSTEM = platform.system()
 
@@ -51,6 +52,7 @@ def linear_cross_entropy(
     filter_e_grad: bool = True,
     filter_c_grad: bool = True,
     impl: str | LinearCrossEntropyImpl = LCE_IMPL_DEFAULT,
+    vocab_parallel_options: VocabParallelOptions | None = None,
 ) -> torch.Tensor:
     """
     :param impl: The linear cross entropy implementation to use. Currently supports cce, torch_compile, and cce_exact.
@@ -68,13 +70,23 @@ def linear_cross_entropy(
     if isinstance(shift, int) and (shift < 0 or shift >= targets.size(-1)):
         raise ValueError(f"Shift must be in the range [0, {targets.size(-1)}). Got {shift}.")
 
+    if vocab_parallel_options is not None:
+        expected_v_dim_size = vocab_parallel_options.stop - vocab_parallel_options.start
+        if c.size(0) != expected_v_dim_size:
+            raise ValueError(f"Expected c.size(0) to be {expected_v_dim_size}, got {c.size(0)}.")
+
+    if bias is not None and bias.size(0) != c.size(0):
+        raise ValueError(
+            f"Bias has a different number of elements than c. {bias.size(0)} vs. {c.size(0)}."
+        )
+
     if impl in CCEPresets.names:
         if platform.system() == "Darwin":
             raise RuntimeError(
                 "CCE does not support MacOS. Please use torch_compile when running on MacOS instead."
             )
 
-        cce_opts = CCEPresets.handle(
+        cce_opts = CCEPresets.build_for_impl(
             impl,
             CCEPreset(
                 filter_eps=filter_eps,
@@ -96,10 +108,19 @@ def linear_cross_entropy(
             reduction,
             shift,
             **cce_opts,
+            vocab_parallel_options=vocab_parallel_options,
         )
     elif impl == "torch_compile":
         return torch_compile_linear_cross_entropy(
-            e, c, targets, bias, ignore_index, softcap, reduction, shift
+            e,
+            c,
+            targets,
+            bias,
+            ignore_index,
+            softcap,
+            reduction,
+            shift,
+            vocab_parallel_options=vocab_parallel_options,
         )
     else:
         raise NotImplementedError(f"{impl} is not implemented.")
