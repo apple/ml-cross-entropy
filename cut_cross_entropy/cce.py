@@ -35,7 +35,6 @@ class CCEParams:
     filter_e_grad: bool
     filter_c_grad: bool
     vocab_parallel_options: VocabParallelOptions | None
-    ignore_index: int
 
 
 @torch.compile(fullgraph=True)
@@ -261,7 +260,6 @@ def cce_linear_cross_entropy(
         filter_e_grad=filter_e_grad and filter_eps is not None,
         filter_c_grad=filter_c_grad and filter_eps is not None,
         vocab_parallel_options=vocab_parallel_options,
-        ignore_index=ignore_index,
     )
 
     return linear_cross_entropy_apply(e, c, bias, cce_params)
