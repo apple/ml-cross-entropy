@@ -92,6 +92,39 @@ There are several other implementations available depending on your needs.
 | cce_kahan_full_c_full_e (cce_exact) | This additionally removes gradient filtering from the embedding gradient. This is useful as a reference point/sanity check. |
 
 
+### Vocabulary Parallelism
+
+We also support computing linear cross-entropy loss for classifier weights sharded
+along the vocabulary dimensions. To use this, simply provided a `VocabParallelOptions` instance
+to `linear_cross_entropy`. This takes 3 parameters, the `start` and `stop` indices of this ranks
+shard, and the `torch.distributed.ProcessGroup` that defines the vocab parallel group for this rank.
+
+
+
+```python
+import torch
+
+from cut_cross_entropy import linear_cross_entropy, VocabParallelOptions
+
+vp_group = torch.distributed.new_group(...)
+embeddings = model.compute_embedding(inputs)
+vp_classifier = model.get_classifier_weights()
+vp_start, vp_stop = model.get_classifier_range()
+
+
+vp_opts = VocabParallelOptions(vp_start, vp_stop, group=vp_group)
+# alternatively, there is an option to create this
+# by linearly divide the vocab across ranks
+vp_opts = VocabParallelOptions.for_vocab(model.vocab_size, group=group)
+
+loss = linear_cross_entropy(embeddings, vp_classifier, labels, ...,
+  vocab_parallel_options=vp_opts)
+
+loss.backward()
+```
+
+
+
 
 ### Computing Related Quantities
 

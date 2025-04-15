@@ -14,6 +14,11 @@ from cut_cross_entropy.utils import (
     _handle_eps,
     handle_reduction_none,
 )
+from cut_cross_entropy.vocab_parallel.utils import (
+    VocabParallelOptions,
+    vp_reduce_correct_logit,
+    vp_reduce_lse,
+)
 
 
 @dataclass
@@ -29,9 +34,10 @@ class CCEParams:
     accum_c_fp32: bool
     filter_e_grad: bool
     filter_c_grad: bool
+    vocab_parallel_options: VocabParallelOptions | None
 
 
-@torch.compile(fullgraph=True, dynamic=True)
+@torch.compile(fullgraph=True)
 def sort_logit_avg(logit_avg: torch.Tensor) -> torch.Tensor:
     return torch.argsort(logit_avg).to(torch.int32)
 
@@ -64,16 +70,50 @@ class LinearCrossEntropyFunction(torch.autograd.Function):
             lse = ret
             logit_avg = None
 
+        if (vp_opts := params.vocab_parallel_options) is not None:
+            lse = vp_reduce_lse(lse, pg=vp_opts.group)
+
+            if params.valids is not None:
+                targets = params.targets[params.valids + params.shift]
+            else:
+                targets = params.targets
+
+            vp_valids = (
+                ((targets >= vp_opts.start) & (targets < vp_opts.stop)).nonzero().to(torch.int32)
+            )
+            assert vp_valids.size(1) == 1
+            vp_valids = vp_valids.squeeze(-1)
+
+            if params.valids is not None:
+                neg_dot_valids = params.valids[vp_valids]
+            else:
+                neg_dot_valids = vp_valids
+
+            neg_dot_targets = params.targets - vp_opts.start
+        else:
+            neg_dot_valids = params.valids
+            neg_dot_targets = params.targets
+            vp_valids = None
+
         neg_dot = indexed_neg_dot_forward_kernel(
             e=e,
             c=c,
-            inds=params.targets,
+            inds=neg_dot_targets,
             bias=bias,
             shift=params.shift,
-            valids=params.valids,
+            valids=neg_dot_valids,
             softcap=params.softcap,
             out_dtype=lse.dtype,
         )
+
+        if params.vocab_parallel_options is not None:
+            global_neg_dot = neg_dot.new_zeros(lse.size())
+            assert vp_valids is not None
+            global_neg_dot[vp_valids] = neg_dot
+
+            neg_dot = vp_reduce_correct_logit(
+                global_neg_dot, pg=params.vocab_parallel_options.group, dtype=lse.dtype
+            )
 
         nll = neg_dot.add_(lse)
 
@@ -114,6 +154,20 @@ class LinearCrossEntropyFunction(torch.autograd.Function):
             grad_out = grad_out.view(-1)
         else:
             raise ValueError(f"Unknown reduction {reduction}")
+
+        if (vp_opts := params.vocab_parallel_options) is not None:
+            is_my_target = (targets >= vp_opts.start) & (targets < vp_opts.stop)
+            targets = torch.where(
+                is_my_target,
+                targets - vp_opts.start,
+                ## NB
+                # The backward kernel already uses
+                # c.size(0) + 1 as the padding value to ensure that
+                # (targets.size(0) % block_size) == 0, so for targets
+                # that aren't in this VP rank's range, we can just consider
+                # them as padded and all work work as expected.
+                targets.new_full((), c.size(0) + 1),
+            )
 
         de, dc, dbias = cce_backward_kernel(
             do=grad_out,
@@ -168,6 +222,7 @@ def cce_linear_cross_entropy(
     accum_c_fp32: bool = False,
     filter_e_grad: bool = True,
     filter_c_grad: bool = True,
+    vocab_parallel_options: VocabParallelOptions | None = None,
 ) -> torch.Tensor:
     assert e.size()[0:-1] == targets.size()
     assert e.size(-1) == c.size(1)
@@ -192,22 +247,19 @@ def cce_linear_cross_entropy(
         targets = torch.nn.functional.pad(targets, (0, 1))[:-1]
 
     assert (targets.data_ptr() % 16) == 0
-
-    return linear_cross_entropy_apply(
-        e,
-        c,
-        bias,
-        CCEParams(
-            targets,
-            valids,
-            softcap,
-            reduction,
-            _handle_eps(filter_eps, e.dtype),
-            shift,
-            batch_shape,
-            accum_e_fp32,
-            accum_c_fp32,
-            filter_e_grad=filter_e_grad and filter_eps is not None,
-            filter_c_grad=filter_c_grad and filter_eps is not None,
-        ),
+    cce_params = CCEParams(
+        targets,
+        valids,
+        softcap,
+        reduction,
+        _handle_eps(filter_eps, e.dtype),
+        shift,
+        batch_shape,
+        accum_e_fp32,
+        accum_c_fp32,
+        filter_e_grad=filter_e_grad and filter_eps is not None,
+        filter_c_grad=filter_c_grad and filter_eps is not None,
+        vocab_parallel_options=vocab_parallel_options,
     )
+
+    return linear_cross_entropy_apply(e, c, bias, cce_params)

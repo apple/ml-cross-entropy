@@ -4,12 +4,14 @@ from cut_cross_entropy.linear_cross_entropy import (
     LinearCrossEntropy,
     linear_cross_entropy,
 )
+from cut_cross_entropy.vocab_parallel import VocabParallelOptions
 
 __all__ = [
     "LinearCrossEntropy",
     "LinearCrossEntropyImpl",
     "linear_cross_entropy",
+    "VocabParallelOptions",
 ]
 
 
-__version__ = "25.4.2"
+__version__ = "25.4.3"
