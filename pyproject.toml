@@ -6,7 +6,6 @@ description = "Code for cut cross entropy, a memory efficient implementation of 
 requires-python = ">= 3.9"
 
 dependencies = [
-    "setuptools>=77.0.3",
     "torch>=2.4",
     'triton>=3.0.0 ; platform_system != "Darwin"',
 ]
@@ -15,6 +14,7 @@ dependencies = [
 test = [
     "pytest",
     "pytest-sugar",
+    "setuptools>=77.0.3",
 ]
 transformers = [
     "transformers>=4.48.2",

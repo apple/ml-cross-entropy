@@ -81,7 +81,16 @@ loss = linear_cross_entropy(embeddings, classifier, labels, ..., impl="torch_com
 ```
 
 
-There are several different
+There are several other implementations available depending on your needs.
+
+| impl | Description |
+|------|-------------|
+| cce  | The CCE implementation as described in the paper. This is may be the fastest and uses the least amount of memory. Generally recommended to start here. |
+| torch_compile | A highly optimized `torch.compile` implementation. This is typically the fastest but uses the most amount of memory. Good as a reference and for systems that don't support Triton. |
+| cce_kahan | Uses Kahan summation (or fp32) to improve numerical precision. This comes at the cost of more memory usage (albeit only a temporary buffer in the backward pass). This is useful for long sequence lengths or if the model is particularly sensitive to numerical imprecision.
+| cce_kahan_full_c | Same as cce_kahan and removes gradient filtering on the classifier gradient. This is useful for pretraining but will be slower.
+| cce_kahan_full_c_full_e (cce_exact) | This additionally removes gradient filtering from the embedding gradient. This is useful as a reference point/sanity check. |
+
 
 
 ### Computing Related Quantities
