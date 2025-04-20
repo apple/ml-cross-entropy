@@ -20,7 +20,7 @@ class VocabParallelOptions:
     group: torch.distributed.ProcessGroup | None = None
 
     @classmethod
-    def for_vocab(
+    def from_vocab(
         cls, vocab_size: int, group: torch.distributed.ProcessGroup | None = None
     ) -> Self:
         rank = torch.distributed.get_rank(group)

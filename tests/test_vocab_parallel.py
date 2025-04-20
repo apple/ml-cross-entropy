@@ -61,7 +61,7 @@ def _target_fn_test_vp(
     e = e.view(4, -1, D)
     targets = targets.view(e.size()[0:-1])
 
-    vocab_parallel_options = VocabParallelOptions.for_vocab(V)
+    vocab_parallel_options = VocabParallelOptions.from_vocab(V)
 
     vp_c = c[vocab_parallel_options.start : vocab_parallel_options.stop].clone()
 
