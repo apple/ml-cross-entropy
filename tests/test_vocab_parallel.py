@@ -24,7 +24,13 @@ def find_free_port() -> int:
 
 
 def _target_fn_test_vp(
-    rank: int, world_size: int, port: int, dtype: torch.dtype, error_tol: float, invalids: bool
+    rank: int,
+    world_size: int,
+    port: int,
+    impl: str,
+    dtype: torch.dtype,
+    error_tol: float,
+    invalids: bool,
 ):
     device = (
         torch.device("cpu")
@@ -46,8 +52,6 @@ def _target_fn_test_vp(
         backend=backend, store=store, world_size=world_size, rank=rank
     )
 
-    torch.distributed.init_process_group()
-
     N, V, D = (252, 507, 123)
 
     e = torch.randn((N, D), device=device, dtype=dtype) / (D**0.5)
@@ -61,16 +65,27 @@ def _target_fn_test_vp(
     e = e.view(4, -1, D)
     targets = targets.view(e.size()[0:-1])
 
+    torch.distributed.broadcast(e, src=0)
+    torch.distributed.broadcast(c, src=0)
+    torch.distributed.broadcast(targets, src=0)
+
     vocab_parallel_options = VocabParallelOptions.from_vocab(V)
 
     vp_c = c[vocab_parallel_options.start : vocab_parallel_options.stop].clone()
 
     vp_c.requires_grad_(True)
-    vp_loss = linear_cross_entropy(e, vp_c, targets, vocab_parallel_options=vocab_parallel_options)
+    e.requires_grad_(True)
+    vp_loss = linear_cross_entropy(
+        e, vp_c, targets, impl=impl, vocab_parallel_options=vocab_parallel_options
+    )
     vp_loss.backward()
 
+    assert e.grad is not None
+    vp_e_grad = e.grad.clone()
+    e.grad = None
+
     c.requires_grad_(True)
-    loss = linear_cross_entropy(e, c, targets)
+    loss = linear_cross_entropy(e, c, targets, impl=impl)
     loss.backward()
 
     assert c.grad is not None
@@ -79,10 +94,17 @@ def _target_fn_test_vp(
         c.grad[vocab_parallel_options.start : vocab_parallel_options.stop],
         vp_c.grad,
         atol=error_tol,
-    )
+    ), "c grad not close"
+
+    assert e.grad is not None
+    assert torch.allclose(
+        e.grad,
+        vp_e_grad,
+        atol=error_tol,
+    ), f"{(e.grad - vp_e_grad).abs().max().item()=}"
 
 
-@pytest.mark.parametrize("impl", ["torch_compile", "cce"])
+@pytest.mark.parametrize("impl", ["torch_compile", "cce_exact"])
 @pytest.mark.parametrize("dtype,error_tol", [(torch.float16, 1e-3), (torch.bfloat16, 1e-2)])
 @pytest.mark.parametrize("nprocs", [4])
 @pytest.mark.parametrize("invalids", [False, True])
@@ -94,7 +116,7 @@ def test_vocab_parallel(
 
     mp_spawn(
         _target_fn_test_vp,
-        args=(nprocs, find_free_port(), dtype, error_tol, invalids),
+        args=(nprocs, find_free_port(), impl, dtype, error_tol, invalids),
         nprocs=nprocs,
         join=True,
     )

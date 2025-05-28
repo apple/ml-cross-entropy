@@ -155,6 +155,8 @@ class LinearCrossEntropyFunction(torch.autograd.Function):
         else:
             raise ValueError(f"Unknown reduction {reduction}")
 
+        reduce_e_grad = False
+        pg = None
         if (vp_opts := params.vocab_parallel_options) is not None:
             is_my_target = (targets >= vp_opts.start) & (targets < vp_opts.stop)
             targets = torch.where(
@@ -168,6 +170,9 @@ class LinearCrossEntropyFunction(torch.autograd.Function):
                 # them as padded and all work work as expected.
                 targets.new_full((), c.size(0) + 1),
             )
+
+            reduce_e_grad = vp_opts.reduce_e_grad
+            pg = vp_opts.group
 
         de, dc, dbias = cce_backward_kernel(
             do=grad_out,
@@ -186,6 +191,8 @@ class LinearCrossEntropyFunction(torch.autograd.Function):
             accum_c_fp32=params.accum_c_fp32,
             filter_e_grad=params.filter_e_grad,
             filter_c_grad=params.filter_c_grad,
+            reduce_e_grad=reduce_e_grad,
+            pg=pg,
         )
 
         return de, dc, dbias, None

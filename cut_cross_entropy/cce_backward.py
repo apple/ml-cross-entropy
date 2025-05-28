@@ -13,6 +13,7 @@ from cut_cross_entropy.tl_utils import (
     tl_softcapping,
     tl_softcapping_grad,
 )
+from cut_cross_entropy.vocab_parallel.utils import vp_reduce_e_grad
 
 
 @triton.jit
@@ -330,6 +331,8 @@ def cce_backward_kernel(
     accum_c_fp32: bool = False,
     filter_e_grad: bool = True,
     filter_c_grad: bool = True,
+    reduce_e_grad: bool = False,
+    pg: torch.distributed.ProcessGroup | None = None,
 ) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
     assert do.numel() in (e.size(0), 1)
     assert c.size(1) == e.size(1)
@@ -458,6 +461,9 @@ def cce_backward_kernel(
         FILTER_E_GRAD=filter_e_grad and de is not None,
         FILTER_C_GRAD=filter_c_grad and dc is not None,
     )
+
+    if reduce_e_grad and de is not None:
+        de = vp_reduce_e_grad(de, pg)
 
     if dbias is not None:
         assert bias is not None

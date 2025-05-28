@@ -125,10 +125,14 @@ vp_opts = VocabParallelOptions(vp_start, vp_stop, group=vp_group)
 # by linearly dividing the vocab across ranks
 vp_opts = VocabParallelOptions.from_vocab(model.vocab_size, group=vp_group)
 
+# All ranks in the vocab parallel group will return the same loss
 loss = linear_cross_entropy(embeddings, vp_classifier, labels, ...,
   vocab_parallel_options=vp_opts)
 
 loss.backward()
+
+# All ranks will compute the same embeddings.grad, but each rank will have only the classifier gradient
+# corresponding to its part of the full classifier matrix (as defined by vp_classifier).
 ```
 
 

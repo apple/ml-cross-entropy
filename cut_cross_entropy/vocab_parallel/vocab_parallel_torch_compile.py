@@ -6,6 +6,7 @@ from cut_cross_entropy.utils import softcapping
 from cut_cross_entropy.vocab_parallel.utils import (
     VocabParallelOptions,
     vp_reduce_correct_logit,
+    vp_reduce_e_grad_hook,
     vp_reduce_lse,
 )
 
@@ -87,6 +88,8 @@ def vocab_parallel_torch_compile_lce_apply(
     reduction: str,
 ) -> torch.Tensor:
     pg = vocab_parallel_options.group
+
+    e = vp_reduce_e_grad_hook(e, vocab_parallel_options)
 
     vp_correct_logit, vp_lse = _vp_torch_compile_correct_logit_lse(
         e,
