@@ -9,6 +9,7 @@ from torch.multiprocessing.spawn import spawn as mp_spawn
 
 from cut_cross_entropy import VocabParallelOptions, linear_cross_entropy
 from cut_cross_entropy.constants import IGNORE_INDEX
+from cut_cross_entropy.utils import compute_z_loss
 from cut_cross_entropy.vocab_parallel.utils import partition_n_into_range
 
 
@@ -31,6 +32,7 @@ def _target_fn_test_vp(
     dtype: torch.dtype,
     error_tol: float,
     invalids: bool,
+    z_loss: bool,
 ):
     device = (
         torch.device("cpu")
@@ -51,6 +53,7 @@ def _target_fn_test_vp(
     torch.distributed.init_process_group(
         backend=backend, store=store, world_size=world_size, rank=rank
     )
+    store = None
 
     N, V, D = (252, 507, 123)
 
@@ -75,9 +78,20 @@ def _target_fn_test_vp(
 
     vp_c.requires_grad_(True)
     e.requires_grad_(True)
-    vp_loss = linear_cross_entropy(
-        e, vp_c, targets, impl=impl, vocab_parallel_options=vocab_parallel_options
-    )
+    if z_loss:
+        vp_loss, lse = linear_cross_entropy(
+            e,
+            vp_c,
+            targets,
+            impl=impl,
+            vocab_parallel_options=vocab_parallel_options,
+            return_lse=True,
+        )
+        vp_loss += compute_z_loss(lse, targets)
+    else:
+        vp_loss = linear_cross_entropy(
+            e, vp_c, targets, impl=impl, vocab_parallel_options=vocab_parallel_options
+        )
     vp_loss.backward()
 
     assert e.grad is not None
@@ -85,7 +99,13 @@ def _target_fn_test_vp(
     e.grad = None
 
     c.requires_grad_(True)
-    loss = linear_cross_entropy(e, c, targets, impl=impl)
+
+    if z_loss:
+        loss, lse = linear_cross_entropy(e, c, targets, impl=impl, return_lse=True)
+        loss += compute_z_loss(lse, targets)
+    else:
+        loss = linear_cross_entropy(e, c, targets, impl=impl)
+
     loss.backward()
 
     assert c.grad is not None
@@ -103,20 +123,28 @@ def _target_fn_test_vp(
         atol=error_tol,
     ), f"{(e.grad - vp_e_grad).abs().max().item()=}"
 
+    torch.distributed.destroy_process_group()
+
 
 @pytest.mark.parametrize("impl", ["torch_compile", "cce_exact"])
 @pytest.mark.parametrize("dtype,error_tol", [(torch.float16, 1e-3), (torch.bfloat16, 1e-2)])
 @pytest.mark.parametrize("nprocs", [4])
 @pytest.mark.parametrize("invalids", [False, True])
+@pytest.mark.parametrize("z_loss", [True, False])
 def test_vocab_parallel(
-    impl: str, dtype: torch.dtype, error_tol: float, nprocs: int, invalids: bool
+    impl: str,
+    dtype: torch.dtype,
+    error_tol: float,
+    nprocs: int,
+    invalids: bool,
+    z_loss: bool,
 ):
     if impl == "cce" and not torch.cuda.is_available():
         pytest.skip("Testing vocab parallel CCE requires cuda")
 
     mp_spawn(
         _target_fn_test_vp,
-        args=(nprocs, find_free_port(), impl, dtype, error_tol, invalids),
+        args=(nprocs, find_free_port(), impl, dtype, error_tol, invalids, z_loss),
         nprocs=nprocs,
         join=True,
     )

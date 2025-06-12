@@ -18,23 +18,38 @@ class _VocabParallelLossFunction(torch.autograd.Function):
         vp_correct_logit: torch.Tensor,
         vp_lse: torch.Tensor,
         pg: torch.distributed.ProcessGroup | None,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         lse = vp_reduce_lse(vp_lse, pg)
         correct_logit = vp_reduce_correct_logit(vp_correct_logit, pg, dtype=lse.dtype)
 
         ctx.save_for_backward(vp_lse, lse)
 
-        return lse - correct_logit
+        return lse - correct_logit, lse
 
     @staticmethod
     def backward(
-        ctx, grad_loss: torch.Tensor
+        ctx,
+        grad_loss: torch.Tensor | None,
+        grad_lse_out: torch.Tensor | None,
     ) -> tuple[torch.Tensor | None, torch.Tensor | None, None]:
-        grad_correct_logit = -grad_loss
+        if grad_loss is not None:
+            grad_correct_logit = -grad_loss
+        else:
+            grad_correct_logit = None
 
         vp_lse, lse = ctx.saved_tensors
 
-        grad_lse = (vp_lse - lse).exp() * grad_loss
+        if grad_lse_out is not None and grad_loss is not None:
+            grad_lse = grad_loss + grad_lse_out
+        elif grad_loss is not None:
+            grad_lse = grad_loss
+        elif grad_lse_out is not None:
+            grad_lse = grad_lse_out
+        else:
+            grad_lse = None
+
+        if grad_lse is not None:
+            grad_lse = (vp_lse - lse).exp() * grad_lse
 
         return grad_correct_logit, grad_lse, None
 
@@ -43,7 +58,7 @@ def _vp_loss_fn(
     vp_correct_logit: torch.Tensor,
     vp_lse: torch.Tensor,
     pg: torch.distributed.ProcessGroup | None,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, torch.Tensor]:
     return _VocabParallelLossFunction.apply(vp_correct_logit, vp_lse, pg)
 
 
@@ -86,7 +101,8 @@ def vocab_parallel_torch_compile_lce_apply(
     vocab_parallel_bias: torch.Tensor | None,
     softcap: float | None,
     reduction: str,
-) -> torch.Tensor:
+    return_lse: bool,
+) -> tuple[torch.Tensor, torch.Tensor | None]:
     pg = vocab_parallel_options.group
 
     e = vp_reduce_e_grad_hook(e, vocab_parallel_options)
@@ -101,7 +117,7 @@ def vocab_parallel_torch_compile_lce_apply(
         softcap=softcap,
     )
 
-    loss = _vp_loss_fn(vp_correct_logit, vp_lse, pg)
+    loss, lse = _vp_loss_fn(vp_correct_logit, vp_lse, pg)
 
     if reduction == "none":
         pass
@@ -112,4 +128,7 @@ def vocab_parallel_torch_compile_lce_apply(
     else:
         raise ValueError(f"Unknown reduction {reduction!r}")
 
-    return loss
+    if not return_lse:
+        lse = None
+
+    return loss, lse

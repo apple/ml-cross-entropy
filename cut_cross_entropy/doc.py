@@ -38,6 +38,7 @@ LINEAR_CROSS_ENTROPY_DOC = """Computes cross-entropy loss using the logits gener
         When this value is non-zero or True, e and targets must have shape (..., T, D) and (..., T), respectively.
 
         Integer values must be in [0, T)
+    :param return_lse: Whether or not to return the log-sum-exp. Useful for computing Z loss.
 """
 
 CCE_OPTS_DOC = [
