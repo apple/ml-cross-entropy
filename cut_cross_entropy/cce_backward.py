@@ -234,12 +234,13 @@ def _cce_backward_kernel(
 
         d_accum *= d_out + d_lse
 
-        # We have d_accum = d_mm - is_target
-        # We then want to get d_accum = d_mm * (d_out + d_lse) - is_target * d_out
-        # If we do d_accum * (d_out + d_lse), we get d_mm * (d_out + d_lse) - is_target * (d_out + d_lse)
-        # So we need to do d_accum += is_target * d_lse
+        if HAS_TARGETS:
+            # We have d_accum = d_mm - is_target
+            # We then want to get d_accum = d_mm * (d_out + d_lse) - is_target * d_out
+            # If we do d_accum * (d_out + d_lse), we get d_mm * (d_out + d_lse) - is_target * (d_out + d_lse)
+            # So we need to do d_accum += is_target * d_lse
 
-        d_accum += tl.where(is_target, d_lse, 0.0)
+            d_accum += tl.where(is_target, d_lse, 0.0)
     else:
         d_accum = d_accum * d_out
 
