@@ -161,6 +161,27 @@ ppo_loss = -torch.minimum(toch.exp(-nll - old_logp) * adv, adv + eps * adv.abs()
 ```
 
 
+### Z Loss
+
+`linear_cross_entropy` can also be used to compute Z loss (a loss on the logsumexp).
+
+```python
+from cut_cross_entropy import linear_cross_entropy
+
+loss, lse = linear_cross_entropy(embeddings, classifier, labels, ..., return_lse=True)
+
+z_loss = lse.pow(2).mean()
+
+# We also have a helper function to compute Z loss that will automatically remove ignored tokens/etc.
+from cut_cross_entropy.utils import compute_z_loss
+
+z_loss = compute_z_loss(lse, labels, shift=shift)
+
+
+loss = loss + z_loss_weight * z_loss
+```
+
+
 ### Generalized Usage
 
 While we have discussed using CCE in the context of large language models, the only constraint

@@ -81,6 +81,7 @@ def _cce_backward_kernel(
     LSE,
     dOut,
     grad_scale,
+    dLSE,
     Valids,
     VocabOrdering,
     softcap,
@@ -124,6 +125,7 @@ def _cce_backward_kernel(
     FILTER_C_GRAD: tl.constexpr,
     HAS_TARGETS: tl.constexpr,
     HAS_SOFTCAP: tl.constexpr,
+    HAS_DLSE: tl.constexpr,
     HAS_SHIFT: tl.constexpr,
     KAHAN_E: tl.constexpr,
     KAHAN_C: tl.constexpr,
@@ -210,9 +212,6 @@ def _cce_backward_kernel(
     elif (FILTER_E_GRAD and COMPUTE_DE) or (FILTER_C_GRAD and COMPUTE_DC):
         should_skip = _block_is_filtered(tl.abs(d_accum), filter_eps)
 
-    if HAS_SOFTCAP:
-        d_accum = tl_softcapping_grad(d_accum, accum, softcap)
-
     if ITEM_DO:
         d_out = tl.load(dOut)
     else:
@@ -225,7 +224,28 @@ def _cce_backward_kernel(
 
     d_out = grad_scale * d_out
 
-    d_accum = d_accum * d_out
+    if HAS_DLSE:
+        if HAS_SHIFT:
+            d_lse_offs_b = offs_b + shift
+        else:
+            d_lse_offs_b = offs_b
+
+        d_lse = tl.load(dLSE + d_lse_offs_b, mask=d_lse_offs_b < BMax, other=0.0)[:, None]
+
+        d_accum *= d_out + d_lse
+
+        if HAS_TARGETS:
+            # We have d_accum = d_mm - is_target
+            # We then want to get d_accum = d_mm * (d_out + d_lse) - is_target * d_out
+            # If we do d_accum * (d_out + d_lse), we get d_mm * (d_out + d_lse) - is_target * (d_out + d_lse)
+            # So we need to do d_accum += is_target * d_lse
+
+            d_accum += tl.where(is_target, d_lse, 0.0)
+    else:
+        d_accum = d_accum * d_out
+
+    if HAS_SOFTCAP:
+        d_accum = tl_softcapping_grad(d_accum, accum, softcap)
 
     if COMPUTE_DBIAS:
         tl.atomic_add(dBias + offs_v * stride_biasv, tl.sum(d_accum, 0), mask=offs_v < V)
@@ -301,6 +321,7 @@ _cce_backward_kernel = triton.heuristics(  # type: ignore
         "HAS_VOCAB_ORDERING": lambda args: args["VocabOrdering"] is not None,
         "HAS_TARGETS": lambda args: args["Targets"] is not None,
         "HAS_SOFTCAP": lambda args: args["softcap"] is not None,
+        "HAS_DLSE": lambda args: args["dLSE"] is not None,
         "HAS_SHIFT": lambda args: args["shift"] != 0,
         "ITEM_DO": lambda args: args["dOut"].numel() == 1,
         "GROUP_B": lambda args: 8,
@@ -316,6 +337,7 @@ _cce_backward_kernel = cce_backward_autotune()(_cce_backward_kernel)  # type: ig
 
 def cce_backward_kernel(
     do: torch.Tensor,
+    dlse: torch.Tensor | None,
     e: torch.Tensor,
     c: torch.Tensor,
     bias: torch.Tensor | None,
@@ -397,6 +419,11 @@ def cce_backward_kernel(
     else:
         B = e.size(0)
 
+    if dlse is not None:
+        dlse = dlse.contiguous()
+        if do.numel() > 1:
+            assert dlse.size() == do.size()
+
     if do.numel() > 1:
         do = do.contiguous()
         lse = lse.contiguous()
@@ -432,6 +459,7 @@ def cce_backward_kernel(
         lse,
         do,
         grad_scale,
+        dlse,
         valids,
         vocab_ordering,
         softcap,

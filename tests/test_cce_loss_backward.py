@@ -4,7 +4,7 @@ import torch
 
 from cut_cross_entropy import linear_cross_entropy
 from cut_cross_entropy.constants import IGNORE_INDEX
-from cut_cross_entropy.utils import softcapping
+from cut_cross_entropy.utils import compute_z_loss, softcapping
 
 skip_no_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="Test requires CUDA")
 
@@ -17,6 +17,7 @@ def _grads(
     softcap: float | None,
     shift: bool,
     reduction: str,
+    z_loss: bool,
     fp32: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     orig_e, orig_c, orig_bias = e, c, bias
@@ -52,7 +53,13 @@ def _grads(
     if reduction == "sum":
         loss = loss / (targets != IGNORE_INDEX).count_nonzero()
 
-    loss.mean().backward()
+    loss = loss.mean()
+
+    if z_loss:
+        lse = torch.logsumexp(logits.float(), dim=-1)
+        loss = loss + compute_z_loss(lse, targets)
+
+    loss.backward()
 
     assert orig_e.grad is not None
     assert orig_c.grad is not None
@@ -77,6 +84,7 @@ def _grads(
 @pytest.mark.parametrize("shift", [False, True])
 @pytest.mark.parametrize("invalids", [False, True])
 @pytest.mark.parametrize("reduction", ["none", "mean", "sum"])
+@pytest.mark.parametrize("z_loss", [True, False])
 @pytest.mark.parametrize("shape", [(256, 512, 128), (252, 507, 128), (252, 507, 123)])
 def test_loss_backward(
     impl: str,
@@ -87,6 +95,7 @@ def test_loss_backward(
     shift: bool,
     invalids: bool,
     reduction: str,
+    z_loss: bool,
     shape: tuple[int, int, int],
 ):
     torch.set_float32_matmul_precision("highest")
@@ -121,20 +130,44 @@ def test_loss_backward(
     e.requires_grad_(True)
     c.requires_grad_(True)
 
-    gt = _grads(e, c, targets, bias, softcap, shift, reduction, fp32=True)
+    gt = _grads(e, c, targets, bias, softcap, shift, reduction, z_loss, fp32=True)
 
-    ref = _grads(e, c, targets, bias, softcap, shift, reduction)
+    ref = _grads(e, c, targets, bias, softcap, shift, reduction, z_loss)
 
     e.grad = c.grad = None
     if bias is not None:
         bias.grad = None
 
-    loss = linear_cross_entropy(
-        e, c, targets, bias=bias, softcap=softcap, shift=shift, reduction=reduction, impl=impl
+    loss_lse = linear_cross_entropy(
+        e,
+        c,
+        targets,
+        bias=bias,
+        softcap=softcap,
+        shift=shift,
+        reduction=reduction,
+        impl=impl,
+        return_lse=z_loss,
     )
+    if z_loss:
+        assert isinstance(loss_lse, tuple)
+        loss, lse = loss_lse
+    else:
+        assert isinstance(loss_lse, torch.Tensor)
+        loss = loss_lse
+        lse = None
+
     if reduction == "sum":
         loss = loss / (targets != IGNORE_INDEX).count_nonzero()
-    loss.mean().backward()
+
+    loss = loss.mean()
+
+    if z_loss:
+        assert lse is not None
+        loss = loss + compute_z_loss(lse, targets, shift)
+
+    loss.backward()
+
     assert e.grad is not None
     assert c.grad is not None
 

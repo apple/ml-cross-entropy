@@ -35,6 +35,7 @@ class CCEParams:
     filter_e_grad: bool
     filter_c_grad: bool
     vocab_parallel_options: VocabParallelOptions | None
+    return_lse: bool
 
 
 @torch.compile(fullgraph=True)
@@ -50,7 +51,7 @@ class LinearCrossEntropyFunction(torch.autograd.Function):
         c: torch.Tensor,
         bias: torch.Tensor | None,
         params: CCEParams,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         needs_grad = e.requires_grad or c.requires_grad
         return_logit_avg = needs_grad and params.filter_eps is not None
 
@@ -117,6 +118,14 @@ class LinearCrossEntropyFunction(torch.autograd.Function):
 
         nll = neg_dot.add_(lse)
 
+        ctx.save_for_backward(e, c, bias, lse, params.targets, params.valids, logit_avg)
+        ctx.params = params
+
+        if not params.return_lse:
+            lse = None
+        else:
+            lse = handle_reduction_none(params.batch_shape, params.valids, params.shift, lse)
+
         reduction = params.reduction
         if reduction == "mean":
             loss = nll.mean()
@@ -127,14 +136,11 @@ class LinearCrossEntropyFunction(torch.autograd.Function):
         else:
             raise ValueError(f"Unknown reduction {reduction}")
 
-        ctx.save_for_backward(e, c, bias, lse, params.targets, params.valids, logit_avg)
-        ctx.params = params
-
-        return loss
+        return loss, lse
 
     @staticmethod
     def backward(
-        ctx, grad_out: torch.Tensor
+        ctx, grad_out: torch.Tensor, grad_lse_out: torch.Tensor | None
     ) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None, None]:
         e, c, bias, lse, targets, valids, logit_avg = ctx.saved_tensors
 
@@ -154,6 +160,9 @@ class LinearCrossEntropyFunction(torch.autograd.Function):
             grad_out = grad_out.view(-1)
         else:
             raise ValueError(f"Unknown reduction {reduction}")
+
+        if grad_lse_out is not None:
+            grad_lse_out = grad_lse_out.view(-1)
 
         reduce_e_grad = False
         pg = None
@@ -176,6 +185,7 @@ class LinearCrossEntropyFunction(torch.autograd.Function):
 
         de, dc, dbias = cce_backward_kernel(
             do=grad_out,
+            dlse=grad_lse_out,
             e=e,
             c=c,
             bias=bias,
@@ -203,14 +213,20 @@ def linear_cross_entropy_apply(
     c: torch.Tensor,
     bias: torch.Tensor | None,
     params: CCEParams,
-) -> torch.Tensor:
-    loss = LinearCrossEntropyFunction.apply(e, c, bias, params)
-    assert isinstance(loss, torch.Tensor)
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    loss, lse = cast(
+        tuple[torch.Tensor, torch.Tensor | None],
+        LinearCrossEntropyFunction.apply(e, c, bias, params),
+    )
 
     if params.shift != 0 and params.reduction == "none":
         loss = loss[..., params.shift :]
 
-    return loss
+    if params.return_lse and params.shift != 0:
+        assert lse is not None
+        lse = lse[..., params.shift :]
+
+    return loss, lse
 
 
 @add_doc_start(LINEAR_CROSS_ENTROPY_DOC)
@@ -224,13 +240,14 @@ def cce_linear_cross_entropy(
     softcap: float | None = None,
     reduction: str = "mean",
     shift: bool | int = 0,
+    return_lse: bool = False,
     filter_eps: float | str | None = "auto",
     accum_e_fp32: bool = False,
     accum_c_fp32: bool = False,
     filter_e_grad: bool = True,
     filter_c_grad: bool = True,
     vocab_parallel_options: VocabParallelOptions | None = None,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, torch.Tensor | None]:
     assert e.size()[0:-1] == targets.size()
     assert e.size(-1) == c.size(1)
     if not torch.cuda.is_bf16_supported():
@@ -267,6 +284,7 @@ def cce_linear_cross_entropy(
         filter_e_grad=filter_e_grad and filter_eps is not None,
         filter_c_grad=filter_c_grad and filter_eps is not None,
         vocab_parallel_options=vocab_parallel_options,
+        return_lse=return_lse,
     )
 
     return linear_cross_entropy_apply(e, c, bias, cce_params)

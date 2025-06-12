@@ -5,6 +5,8 @@ import importlib.metadata
 import packaging.version
 import torch
 
+from cut_cross_entropy.constants import IGNORE_INDEX
+
 
 @torch.compile(fullgraph=True)
 def softcapping(logits: torch.Tensor, softcap: float) -> torch.Tensor:
@@ -56,6 +58,38 @@ def handle_reduction_none(
     full_loss[(valids + shift) if shift != 0 else valids] = loss
 
     return full_loss.view(batch_shape)
+
+
+@torch.compile(fullgraph=True, disable=True)
+def compute_z_loss(
+    lse: torch.Tensor,
+    targets: torch.Tensor | None = None,
+    shift: bool | int = False,
+    ignore_index: int = IGNORE_INDEX,
+) -> torch.Tensor:
+    """Computes Z Loss.
+
+    Specifically it computes z_loss = mean(||lse||_2^2).
+
+    Providing the targets/shift/ignore index is used to mask out the loss for ignored tokens.
+    """
+
+    z_loss = lse.pow(2)
+
+    if targets is None:
+        return z_loss.mean()
+
+    shift = int(shift)
+
+    if shift != 0:
+        targets = targets[..., shift:]
+
+    is_not_ignore_index = targets != ignore_index
+
+    z_loss = torch.where(is_not_ignore_index, z_loss, 0.0).mean()
+    z_loss *= is_not_ignore_index.count_nonzero().type_as(z_loss) / lse.numel()
+
+    return z_loss
 
 
 @functools.cache

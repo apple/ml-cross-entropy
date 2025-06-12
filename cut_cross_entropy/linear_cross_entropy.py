@@ -1,6 +1,6 @@
 # Copyright (C) 2024 Apple Inc. All Rights Reserved.
 import platform
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, overload
 
 import torch
 import torch.nn as nn
@@ -34,6 +34,69 @@ is_d_tensor_error_message = (
 )
 
 
+@overload
+def linear_cross_entropy(
+    e: torch.Tensor,
+    c: torch.Tensor,
+    targets: torch.Tensor,
+    bias: torch.Tensor | None = None,
+    ignore_index: int = IGNORE_INDEX,
+    softcap: float | None = None,
+    reduction: str = "mean",
+    shift: bool | int = 0,
+    return_lse: Literal[False] = False,
+    filter_eps: float | str | None = "auto",
+    accum_e_fp32: bool = False,
+    accum_c_fp32: bool = False,
+    filter_e_grad: bool = True,
+    filter_c_grad: bool = True,
+    impl: str | LinearCrossEntropyImpl = LCE_IMPL_DEFAULT,
+    vocab_parallel_options: VocabParallelOptions | None = None,
+) -> torch.Tensor: ...
+
+
+@overload
+def linear_cross_entropy(
+    e: torch.Tensor,
+    c: torch.Tensor,
+    targets: torch.Tensor,
+    bias: torch.Tensor | None = None,
+    ignore_index: int = IGNORE_INDEX,
+    softcap: float | None = None,
+    reduction: str = "mean",
+    shift: bool | int = 0,
+    return_lse: Literal[True] = True,
+    filter_eps: float | str | None = "auto",
+    accum_e_fp32: bool = False,
+    accum_c_fp32: bool = False,
+    filter_e_grad: bool = True,
+    filter_c_grad: bool = True,
+    impl: str | LinearCrossEntropyImpl = LCE_IMPL_DEFAULT,
+    vocab_parallel_options: VocabParallelOptions | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]: ...
+
+
+@overload
+def linear_cross_entropy(
+    e: torch.Tensor,
+    c: torch.Tensor,
+    targets: torch.Tensor,
+    bias: torch.Tensor | None = None,
+    ignore_index: int = IGNORE_INDEX,
+    softcap: float | None = None,
+    reduction: str = "mean",
+    shift: bool | int = 0,
+    return_lse: bool = False,
+    filter_eps: float | str | None = "auto",
+    accum_e_fp32: bool = False,
+    accum_c_fp32: bool = False,
+    filter_e_grad: bool = True,
+    filter_c_grad: bool = True,
+    impl: str | LinearCrossEntropyImpl = LCE_IMPL_DEFAULT,
+    vocab_parallel_options: VocabParallelOptions | None = None,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]: ...
+
+
 @add_doc_start(LINEAR_CROSS_ENTROPY_DOC)
 @add_doc_start(*(doc_str + " Only valid for the cce implementation.\n" for doc_str in CCE_OPTS_DOC))
 @add_doc_start(IMPL_DOC)
@@ -46,6 +109,7 @@ def linear_cross_entropy(
     softcap: float | None = None,
     reduction: str = "mean",
     shift: bool | int = 0,
+    return_lse: bool = False,
     filter_eps: float | str | None = "auto",
     accum_e_fp32: bool = False,
     accum_c_fp32: bool = False,
@@ -53,9 +117,9 @@ def linear_cross_entropy(
     filter_c_grad: bool = True,
     impl: str | LinearCrossEntropyImpl = LCE_IMPL_DEFAULT,
     vocab_parallel_options: VocabParallelOptions | None = None,
-) -> torch.Tensor:
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """
-    :param impl: The linear cross entropy implementation to use. Currently supports cce, torch_compile, and cce_exact.
+    :param vocab_parallel_options: Used to enable vocab parallelism.
     """
 
     if is_torch_greater_or_equal_2_5():
@@ -98,7 +162,7 @@ def linear_cross_entropy(
         )
 
         assert cce_linear_cross_entropy is not None
-        return cce_linear_cross_entropy(
+        loss, lse = cce_linear_cross_entropy(
             e,
             c,
             targets,
@@ -109,9 +173,10 @@ def linear_cross_entropy(
             shift,
             **cce_opts,
             vocab_parallel_options=vocab_parallel_options,
+            return_lse=return_lse,
         )
     elif impl == "torch_compile":
-        return torch_compile_linear_cross_entropy(
+        loss, lse = torch_compile_linear_cross_entropy(
             e,
             c,
             targets,
@@ -121,9 +186,16 @@ def linear_cross_entropy(
             reduction,
             shift,
             vocab_parallel_options=vocab_parallel_options,
+            return_lse=return_lse,
         )
     else:
         raise NotImplementedError(f"{impl} is not implemented.")
+
+    if return_lse:
+        assert lse is not None
+        return loss, lse
+    else:
+        return loss
 
 
 class LinearCrossEntropy(nn.Module):
@@ -139,6 +211,7 @@ class LinearCrossEntropy(nn.Module):
         filter_e_grad: bool = True,
         filter_c_grad: bool = True,
         impl: str | LinearCrossEntropyImpl = LCE_IMPL_DEFAULT,
+        return_lse: bool = False,
     ):
         super().__init__()
         self.ignore_index = ignore_index
@@ -154,6 +227,7 @@ class LinearCrossEntropy(nn.Module):
         self.filter_c_grad = filter_c_grad
 
         self.impl = impl
+        self.return_lse = return_lse
 
     def forward(
         self,
@@ -161,7 +235,7 @@ class LinearCrossEntropy(nn.Module):
         c: torch.Tensor,
         targets: torch.Tensor,
         bias: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         return linear_cross_entropy(
             e,
             c,
@@ -177,4 +251,5 @@ class LinearCrossEntropy(nn.Module):
             filter_e_grad=self.filter_e_grad,
             filter_c_grad=self.filter_c_grad,
             impl=self.impl,
+            return_lse=self.return_lse,
         )
