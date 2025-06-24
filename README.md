@@ -12,7 +12,7 @@ As language models grow ever larger, so do their vocabularies. This has shifted 
 
 **Requirements**
 
-1. Python 3.10+
+1. Python 3.9+
 2. PyTorch 2.4+
 3. Triton 3.0+
 4. Ampere (or newer) GPU

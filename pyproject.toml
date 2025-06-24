@@ -17,7 +17,7 @@ test = [
     "setuptools>=77.0.3",
 ]
 transformers = [
-    "transformers>=4.48.2",
+    "transformers==4.48.2",
 ]
 
 all = [
