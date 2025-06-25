@@ -32,6 +32,7 @@ def _mm_backward(
     BLOCK_D: tl.constexpr,
     EVEN_D: tl.constexpr,
     USE_KAHAN: tl.constexpr,
+    DOT_PRECISION: tl.constexpr,
 ):
     d_inds = tl.arange(0, BLOCK_D)[None, :].to(tl.int64)
 
@@ -48,7 +49,7 @@ def _mm_backward(
 
         b = tl.load(b_ptrs, mask=mask, other=0.0)
 
-        da_i = tl.dot(do, b).to(da_ptrs.dtype.element_ty)
+        da_i = tl.dot(do, b, input_precision=DOT_PRECISION).to(da_ptrs.dtype.element_ty)
 
         if EVEN_D:
             mask = partial_mask_a
@@ -132,6 +133,7 @@ def _cce_backward_kernel(
     COMPUTE_DC: tl.constexpr,
     COMPUTE_DE: tl.constexpr,
     COMPUTE_DBIAS: tl.constexpr,
+    DOT_PRECISION: tl.constexpr,
 ):
     pid = tl.program_id(axis=0)
     num_b_chunks = tl.cdiv(B, BLOCK_B)
@@ -169,7 +171,7 @@ def _cce_backward_kernel(
 
         c = tl.load(c_ptrs, mask=c_mask, other=0.0)
 
-        accum = tl.dot(e, c, accum)
+        accum = tl.dot(e, c, accum, input_precision=DOT_PRECISION)
 
         e_ptrs += BLOCK_D * stride_ed
         c_ptrs += BLOCK_D * stride_cd
@@ -276,6 +278,7 @@ def _cce_backward_kernel(
                 MM_BACK_BLOCK_D,
                 MM_BACK_EVEN_D,
                 KAHAN_E,
+                DOT_PRECISION,
             )
 
     if COMPUTE_DC:
@@ -302,6 +305,7 @@ def _cce_backward_kernel(
                 MM_BACK_BLOCK_D,
                 MM_BACK_EVEN_D,
                 KAHAN_C,
+                DOT_PRECISION,
             )
 
 
@@ -330,6 +334,9 @@ _cce_backward_kernel = triton.heuristics(  # type: ignore
         "KAHAN_E": lambda args: args["dEC"] is not None,
         "KAHAN_C": lambda args: args["dCC"] is not None,
         "COMPUTE_DBIAS": lambda args: args["dBias"] is not None,
+        "DOT_PRECISION": lambda args: "tf32"
+        if torch.get_float32_matmul_precision() == "high"
+        else "ieee",
     }
 )(_cce_backward_kernel)
 _cce_backward_kernel = cce_backward_autotune()(_cce_backward_kernel)  # type: ignore
@@ -359,19 +366,22 @@ def cce_backward_kernel(
     assert do.numel() in (e.size(0), 1)
     assert c.size(1) == e.size(1)
     assert lse.size(0) == e.size(0) or (valids is not None and lse.size(0) == valids.size(0))
-    assert e.dtype in (
-        torch.float16,
-        torch.bfloat16,
-    ), "Backwards requires embeddings to be bf16 or fp16"
-    assert c.dtype in (
-        torch.float16,
-        torch.bfloat16,
-    ), "Backwards requires classifier to be bf16 or fp16"
+
+    if not is_triton_greater_or_equal_3_2_0():
+        assert e.dtype in (
+            torch.float16,
+            torch.bfloat16,
+        ), "Backwards for triton<3.2 requires embeddings to be bf16 or fp16"
+        assert c.dtype in (
+            torch.float16,
+            torch.bfloat16,
+        ), "Backwards for triton<3.2 requires classifier to be bf16 or fp16"
+        can_use_fp32_accum = False
+    else:
+        can_use_fp32_accum = True
 
     do = do.contiguous()
     lse = lse.contiguous()
-
-    can_use_fp32_accum = is_triton_greater_or_equal_3_2_0()
 
     de_dtype = torch.float32 if (accum_e_fp32 and can_use_fp32_accum) else None
     de = torch.zeros_like(e, dtype=de_dtype) if e.requires_grad else None

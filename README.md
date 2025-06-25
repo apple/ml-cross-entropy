@@ -30,12 +30,30 @@ pip install "cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.g
 
 **Usage**
 
+Given a model loss computation that looks like the following,
+```python
+import torch.nn.functional as F
+
+embeddings = model.compute_embedding(inputs)
+classifier = model.get_classifier_weights()
+
+logits = embeddings @ classifier.T
+
+loss = F.cross_entropy(logits.float(), labels)
+```
+
+you can instead compute the loss as follows,
+
 ```python
 from cut_cross_entropy import linear_cross_entropy
 
 embeddings = model.compute_embedding(inputs)
 classifier = model.get_classifier_weights()
 
+# Note: There is no need to upcast embeddings or classifier to float32
+# like you need to do with logits when using F.cross_entropy.
+# The CCE kernel will automatically use fp32 for operations that are unstable
+# in bf16/fp16.
 loss = linear_cross_entropy(embeddings, classifier, labels)
 ```
 
