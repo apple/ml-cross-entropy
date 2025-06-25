@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import cast
 
 import torch
+import torch.amp
 
 from cut_cross_entropy.cce_backward import cce_backward_kernel
 from cut_cross_entropy.cce_lse_forward import cce_lse_forward_kernel
@@ -45,6 +46,7 @@ def sort_logit_avg(logit_avg: torch.Tensor) -> torch.Tensor:
 
 class LinearCrossEntropyFunction(torch.autograd.Function):
     @staticmethod
+    @torch.amp.custom_fwd(device_type="cuda")
     def forward(
         ctx,
         e: torch.Tensor,
@@ -53,7 +55,21 @@ class LinearCrossEntropyFunction(torch.autograd.Function):
         params: CCEParams,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         needs_grad = e.requires_grad or c.requires_grad
+        if bias is not None:
+            needs_grad = needs_grad or bias.requires_grad
+
         return_logit_avg = needs_grad and params.filter_eps is not None
+
+        compute_dbias = bias is not None and bias.requires_grad
+        compute_de = e.requires_grad
+        compute_dc = c.requires_grad
+
+        if torch.is_autocast_enabled():
+            e = e.to(dtype=torch.get_autocast_dtype("cuda"))
+            c = c.to(dtype=torch.get_autocast_dtype("cuda"))
+
+            if bias is not None:
+                bias = bias.to(dtype=torch.get_autocast_dtype("cuda"))
 
         ret = cce_lse_forward_kernel(
             e=e,
@@ -120,6 +136,9 @@ class LinearCrossEntropyFunction(torch.autograd.Function):
 
         ctx.save_for_backward(e, c, bias, lse, params.targets, params.valids, logit_avg)
         ctx.params = params
+        ctx.compute_dbias = compute_dbias
+        ctx.compute_de = compute_de
+        ctx.compute_dc = compute_dc
 
         if not params.return_lse:
             lse = None
@@ -139,6 +158,7 @@ class LinearCrossEntropyFunction(torch.autograd.Function):
         return loss, lse
 
     @staticmethod
+    @torch.amp.custom_bwd(device_type="cuda")
     def backward(
         ctx, grad_out: torch.Tensor, grad_lse_out: torch.Tensor | None
     ) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None, None]:
@@ -187,8 +207,11 @@ class LinearCrossEntropyFunction(torch.autograd.Function):
             do=grad_out,
             dlse=grad_lse_out,
             e=e,
+            compute_de=ctx.compute_de,
             c=c,
+            compute_dc=ctx.compute_dc,
             bias=bias,
+            compute_dbias=ctx.compute_dbias,
             lse=lse,
             valids=valids,
             softcap=params.softcap,
