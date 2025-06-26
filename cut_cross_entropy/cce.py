@@ -11,6 +11,7 @@ from cut_cross_entropy.constants import IGNORE_INDEX
 from cut_cross_entropy.doc import CCE_OPTS_DOC, LINEAR_CROSS_ENTROPY_DOC, add_doc_start
 from cut_cross_entropy.indexed_dot import indexed_neg_dot_forward_kernel
 from cut_cross_entropy.utils import (
+    TensorInfo,
     _build_flat_valids,
     _handle_eps,
     handle_reduction_none,
@@ -60,16 +61,19 @@ class LinearCrossEntropyFunction(torch.autograd.Function):
 
         return_logit_avg = needs_grad and params.filter_eps is not None
 
-        compute_dbias = bias is not None and bias.requires_grad
-        compute_de = e.requires_grad
-        compute_dc = c.requires_grad
+        e_info = TensorInfo(e.dtype, e.requires_grad)
+        c_info = TensorInfo(c.dtype, c.requires_grad)
+
+        bias_info = None
+        if bias is not None:
+            bias_info = TensorInfo(bias.dtype, bias.requires_grad)
 
         if torch.is_autocast_enabled():
-            e = e.to(dtype=torch.get_autocast_dtype("cuda"))
-            c = c.to(dtype=torch.get_autocast_dtype("cuda"))
+            e = e.to(dtype=torch.get_autocast_gpu_dtype())
+            c = c.to(dtype=torch.get_autocast_gpu_dtype())
 
             if bias is not None:
-                bias = bias.to(dtype=torch.get_autocast_dtype("cuda"))
+                bias = bias.to(dtype=torch.get_autocast_gpu_dtype())
 
         ret = cce_lse_forward_kernel(
             e=e,
@@ -136,9 +140,9 @@ class LinearCrossEntropyFunction(torch.autograd.Function):
 
         ctx.save_for_backward(e, c, bias, lse, params.targets, params.valids, logit_avg)
         ctx.params = params
-        ctx.compute_dbias = compute_dbias
-        ctx.compute_de = compute_de
-        ctx.compute_dc = compute_dc
+        ctx.e_info = e_info
+        ctx.c_info = c_info
+        ctx.bias_info = bias_info
 
         if not params.return_lse:
             lse = None
@@ -207,11 +211,11 @@ class LinearCrossEntropyFunction(torch.autograd.Function):
             do=grad_out,
             dlse=grad_lse_out,
             e=e,
-            compute_de=ctx.compute_de,
+            e_info=ctx.e_info,
             c=c,
-            compute_dc=ctx.compute_dc,
+            c_info=ctx.c_info,
             bias=bias,
-            compute_dbias=ctx.compute_dbias,
+            bias_info=ctx.bias_info,
             lse=lse,
             valids=valids,
             softcap=params.softcap,
@@ -299,7 +303,9 @@ def cce_linear_cross_entropy(
         valids,
         softcap,
         reduction,
-        _handle_eps(filter_eps, e.dtype),
+        _handle_eps(
+            filter_eps, torch.get_autocast_gpu_dtype() if torch.is_autocast_enabled() else e.dtype
+        ),
         shift,
         batch_shape,
         accum_e_fp32,

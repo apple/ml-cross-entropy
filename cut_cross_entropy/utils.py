@@ -1,6 +1,7 @@
 # Copyright (C) 2024 Apple Inc. All Rights Reserved.
 import functools
 import importlib.metadata
+from dataclasses import dataclass
 
 import packaging.version
 import torch
@@ -111,3 +112,9 @@ def is_package_greater_or_equal(package: str, version: str) -> bool:
 @functools.cache
 def is_torch_greater_or_equal_2_5() -> bool:
     return is_package_greater_or_equal("torch", "2.5")
+
+
+@dataclass
+class TensorInfo:
+    dtype: torch.dtype
+    requires_grad: bool

@@ -13,6 +13,7 @@ from cut_cross_entropy.tl_utils import (
     tl_softcapping,
     tl_softcapping_grad,
 )
+from cut_cross_entropy.utils import TensorInfo
 from cut_cross_entropy.vocab_parallel.utils import vp_reduce_e_grad
 
 
@@ -346,11 +347,11 @@ def cce_backward_kernel(
     do: torch.Tensor,
     dlse: torch.Tensor | None,
     e: torch.Tensor,
-    compute_de: bool,
+    e_info: TensorInfo,
     c: torch.Tensor,
-    compute_dc: bool,
+    c_info: TensorInfo,
     bias: torch.Tensor | None,
-    compute_dbias: bool,
+    bias_info: TensorInfo | None,
     lse: torch.Tensor,
     valids: torch.Tensor | None,
     softcap: float | None,
@@ -387,16 +388,17 @@ def cce_backward_kernel(
     lse = lse.contiguous()
 
     de_dtype = torch.float32 if (accum_e_fp32 and can_use_fp32_accum) else None
-    de = torch.zeros_like(e, dtype=de_dtype) if compute_de else None
+    de = torch.zeros_like(e, dtype=de_dtype) if e_info.requires_grad else None
 
     dc_dtype = torch.float32 if (accum_c_fp32 and can_use_fp32_accum) else None
-    dc = torch.zeros_like(c, dtype=dc_dtype) if compute_dc else None
+    dc = torch.zeros_like(c, dtype=dc_dtype) if c_info.requires_grad else None
 
     accum_e_fp32 = accum_e_fp32 and de is not None
     accum_c_fp32 = accum_c_fp32 and dc is not None
 
     if bias is not None:
-        dbias = torch.zeros_like(bias, dtype=torch.float32) if compute_dbias else None
+        assert bias_info is not None
+        dbias = torch.zeros_like(bias, dtype=torch.float32) if bias_info.requires_grad else None
     else:
         dbias = None
 
@@ -507,13 +509,13 @@ def cce_backward_kernel(
         de = vp_reduce_e_grad(de, pg)
 
     if dbias is not None:
-        assert bias is not None
-        dbias = dbias.to(dtype=bias.dtype)
+        assert bias_info is not None
+        dbias = dbias.to(dtype=bias_info.dtype)
 
     if dc is not None:
-        dc = dc.to(dtype=c.dtype)
+        dc = dc.to(dtype=c_info.dtype)
 
     if de is not None:
-        de = de.to(dtype=e.dtype)
+        de = de.to(dtype=e_info.dtype)
 
     return de, dc, dbias
