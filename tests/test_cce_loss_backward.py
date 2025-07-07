@@ -225,3 +225,24 @@ def test_loss_partials(compute_de: bool, compute_dc: bool, compute_dbias: bool):
     assert (e.grad is not None) == compute_de
     assert (c.grad is not None) == compute_dc
     assert (bias.grad is not None) == compute_dbias
+
+
+@skip_no_cuda
+def test_loss_all_ignored():
+    torch.cuda.manual_seed(0)
+    dtype = torch.bfloat16
+
+    N, V, D = (256, 512, 128)
+    e = torch.randn((N, D), device="cuda", dtype=dtype, requires_grad=False)
+    c = torch.randn((V, D), device="cuda", dtype=dtype, requires_grad=False)
+
+    targets = torch.full((N,), IGNORE_INDEX, device="cuda", dtype=torch.int64)
+
+    e = e.view(4, -1, D)
+    targets = targets.view(e.size()[0:-1])
+
+    e.requires_grad_(True)
+    c.requires_grad_(True)
+
+    loss = linear_cross_entropy(e, c, targets, reduction="mean")
+    loss.backward()

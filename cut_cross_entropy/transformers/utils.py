@@ -54,6 +54,7 @@ def apply_lce(
     labels: torch.Tensor,
     opts: PatchOptions,
     bias: torch.Tensor | None = None,
+    softcap: float | None = None,
     **loss_kwargs,
 ) -> torch.Tensor:
     num_items_in_batch = loss_kwargs.get("num_items_in_batch", None)
@@ -69,6 +70,7 @@ def apply_lce(
         labels.to(e.device),
         bias=bias,
         shift=True,
+        softcap=softcap,
         **cce_kwargs,
     )
 

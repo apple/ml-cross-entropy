@@ -105,7 +105,14 @@ def cce_forward(
 
     if _PATCH_OPTS is not None and _PATCH_OPTS.use_lce(labels, self.training):
         assert labels is not None
-        loss = apply_lce(hidden_states, self.lm_head.weight, labels, _PATCH_OPTS, **loss_kwargs)
+        loss = apply_lce(
+            hidden_states,
+            self.lm_head.weight,
+            labels,
+            _PATCH_OPTS,
+            **loss_kwargs,
+            softcap=self.config.final_logit_softcapping,
+        )
     else:
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
         logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :])
