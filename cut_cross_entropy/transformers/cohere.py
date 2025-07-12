@@ -31,9 +31,13 @@ from cut_cross_entropy.transformers.utils import (
 )
 from transformers.cache_utils import Cache
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
-from transformers.models.cohere.modeling_cohere import (
-    KwargsForCausalLM,
-)
+try:
+    from transformers.models.cohere.modeling_cohere import (
+        KwargsForCausalLM,
+    )
+except ImportError:
+    from transformers.utils.generic import TransformersKwargs as KwargsForCausalLM
+
 from transformers.processing_utils import Unpack
 
 _PATCH_OPTS: PatchOptions | None = None

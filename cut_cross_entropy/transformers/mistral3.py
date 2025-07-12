@@ -28,8 +28,13 @@ from cut_cross_entropy.transformers.utils import (
 )
 from transformers.models.mistral3.modeling_mistral3 import (
     Mistral3CausalLMOutputWithPast,
-    KwargsForCausalLM,
 )
+try:
+    from transformers.models.mistral3.modeling_mistral3 import (
+        Mistral3Model,
+    )
+except ImportError:
+    from transformers.utils.generic import TransformersKwargs as KwargsForCausalLM
 from transformers.processing_utils import Unpack
 
 _PATCH_OPTS: PatchOptions | None = None

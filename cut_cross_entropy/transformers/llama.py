@@ -31,9 +31,13 @@ from transformers.modeling_outputs import (
     BaseModelOutputWithPast,
     CausalLMOutputWithPast,
 )
-from transformers.models.llama.modeling_llama import (
-    KwargsForCausalLM,
-)
+try:
+    from transformers.models.llama.modeling_llama import (
+        KwargsForCausalLM,
+    )
+except ImportError:
+    from transformers.utils.generic import TransformersKwargs as KwargsForCausalLM
+
 from transformers.processing_utils import Unpack
 
 _PATCH_OPTS: PatchOptions | None = None
