@@ -113,8 +113,8 @@ def generate_test_data_otf(
     torch.cuda.set_device(default_device)
 
     return Data(
-        inputs.to(device=default_device),
-        w.to(device=default_device),
+        inputs.to(device=default_device, dtype=dtype),
+        w.to(device=default_device, dtype=dtype),
         labels.to(device=default_device),
         softcap=getattr(config, "final_logit_softcapping", None),
     )

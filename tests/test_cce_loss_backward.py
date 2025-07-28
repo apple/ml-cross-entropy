@@ -87,7 +87,7 @@ def _grads(
 @pytest.mark.parametrize("invalids", [False, True])
 @pytest.mark.parametrize("reduction", ["none", "mean", "sum"])
 @pytest.mark.parametrize("z_loss", [True, False])
-@pytest.mark.parametrize("shape", [(256, 512, 128), (252, 507, 128), (252, 507, 123)])
+@pytest.mark.parametrize("shape", [(256, 512, 512), (252, 507, 512), (252, 507, 497)])
 def test_loss_backward(
     impl: str,
     dtype: torch.dtype,
@@ -124,7 +124,7 @@ def test_loss_backward(
     targets = targets.view(e.size()[0:-1])
 
     if has_bias:
-        bias = torch.randn(V, device="cuda", dtype=dtype) * 0.02
+        bias = torch.randn(V, device="cuda", dtype=dtype) * 0.1
         bias.requires_grad_(True)
     else:
         bias = None

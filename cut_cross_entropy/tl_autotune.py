@@ -453,8 +453,32 @@ def get_autotune_config():
     ] + get_configs_io_bound()
 
 
-def _heuristics_from_config(config: Config) -> Callable[..., autotuner.Heuristics]:
-    return triton.heuristics({k: (lambda args, _v=v: _v) for k, v in config.all_kwargs().items()})
+def _heuristics_from_config(
+    config: Config, fp32_config: Config | None = None, arg_name: str | None = None
+) -> Callable[..., autotuner.Heuristics]:
+    if fp32_config is None:
+        return triton.heuristics(
+            {k: (lambda args, _v=v: _v) for k, v in config.all_kwargs().items()}
+        )
+    else:
+        assert arg_name is not None
+
+        kwargs = config.all_kwargs()
+        fp32_kwargs = fp32_config.all_kwargs()
+        assert kwargs.keys() == fp32_kwargs.keys()
+
+        keys_opts = list(kwargs.items())
+        fp32_opts = [fp32_kwargs[k] for k, _ in keys_opts]
+        return triton.heuristics(
+            {
+                k: (
+                    lambda args, _v=v, _fp32_v=fp32_v: _fp32_v
+                    if args[arg_name].dtype == torch.float32
+                    else _v
+                )
+                for (k, v), fp32_v in zip(keys_opts, fp32_opts, strict=True)
+            }
+        )
 
 
 def _cce_forward_best_config() -> Config:
@@ -490,6 +514,10 @@ def _cce_backward_best_config() -> Config:
     return Config(dict(BLOCK_B=128, BLOCK_V=128, BLOCK_D=32), num_warps=4, num_stages=4)
 
 
+def _cce_backward_best_config_fp32() -> Config:
+    return Config(dict(BLOCK_B=32, BLOCK_V=128, BLOCK_D=32), num_warps=4, num_stages=3)
+
+
 def cce_backward_autotune() -> Callable[..., autotuner.Autotuner | autotuner.Heuristics]:
     if _AUTOTUNE:
         return _cce_autotune(
@@ -509,7 +537,9 @@ def cce_backward_autotune() -> Callable[..., autotuner.Autotuner | autotuner.Heu
             reset_to_zero=["dE", "dC", "dEC", "dCC", "dBias"],
         )
     else:
-        return _heuristics_from_config(_cce_backward_best_config())
+        return _heuristics_from_config(
+            _cce_backward_best_config(), _cce_backward_best_config_fp32(), "E"
+        )
 
 
 def _indexed_dot_best_config() -> Config:

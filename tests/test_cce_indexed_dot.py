@@ -14,7 +14,7 @@ skip_no_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="Test re
 )
 @pytest.mark.parametrize("softcap", [None, 20.0])
 @pytest.mark.parametrize("has_bias", [True, False])
-@pytest.mark.parametrize("shape", [(256, 512, 128), (255, 507, 128), (255, 507, 123)])
+@pytest.mark.parametrize("shape", [(256, 512, 512), (255, 507, 512), (255, 507, 497)])
 def test_indexed_dot(
     dtype: torch.dtype,
     error_tol: float,
@@ -34,7 +34,7 @@ def test_indexed_dot(
     c[0 : min(N, V) // 2] = e[0 : min(N, V) // 2]
 
     if has_bias:
-        bias = torch.randn(V, device="cuda", dtype=dtype) * 0.02
+        bias = torch.randn(V, device="cuda", dtype=dtype)
     else:
         bias = None
 
