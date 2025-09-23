@@ -117,10 +117,10 @@ def is_torch_greater_or_equal_2_5() -> bool:
 
 
 @functools.cache
-def is_torch_2_6() -> bool:
-    return packaging.version.parse(importlib.metadata.version("torch")) == packaging.version.parse(
-        "2.6"
-    )
+def is_triton_3_2() -> bool:
+    return packaging.version.parse(
+        packaging.version.parse(importlib.metadata.version("triton")).base_version
+    ) == packaging.version.parse("3.2")
 
 
 @dataclass(slots=True)

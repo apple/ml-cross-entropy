@@ -503,7 +503,7 @@ def test_gradient_divergence():
         # Break if differences get too large
         if c_grad_diff > 0.1:
             print(f"Large gradient differences detected at step {step}, stopping early")
-            # break
+            break
 
     final_c_diff = (c_torch - c_cce).abs().max().item()
     if use_bias and bias_torch is not None and bias_cce is not None:
