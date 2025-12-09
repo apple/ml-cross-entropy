@@ -6,24 +6,12 @@ import torch
 import transformers
 from transformers.cache_utils import Cache
 from transformers.modeling_outputs import CausalLMOutputWithPast
-from transformers.models.phi3.modeling_phi3 import (
-    _CONFIG_FOR_DOC,
-    PHI3_INPUTS_DOCSTRING,
-    KwargsForCausalLM,
-    Unpack,
-)
-from transformers.utils import (
-    add_start_docstrings_to_model_forward,
-    replace_return_docstrings,
-)
 
 from .utils import PatchOptions, TransformersModelT, apply_lce
 
 _PATCH_OPTS: PatchOptions | None = None
 
 
-@add_start_docstrings_to_model_forward(PHI3_INPUTS_DOCSTRING)
-@replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
 def cce_forward(
     self,
     input_ids: torch.LongTensor = None,
@@ -38,7 +26,7 @@ def cce_forward(
     return_dict: Optional[bool] = None,
     cache_position: Optional[torch.LongTensor] = None,
     num_logits_to_keep: int = 0,
-    **kwargs: Unpack[KwargsForCausalLM],
+    **kwargs,
 ) -> Union[Tuple, CausalLMOutputWithPast]:
     r"""
     Args:
