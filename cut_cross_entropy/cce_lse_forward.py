@@ -116,7 +116,8 @@ def _cce_lse_forward_kernel(
         neg_correct_logit_ptrs = tl.broadcast_to(
             neg_correct_logit_ptrs[:, None], (BLOCK_B, BLOCK_V)
         )
-        tl.store(neg_correct_logit_ptrs, -logits, mask=this_targets[:, None] == offs_v[None, :])
+        is_target = (this_targets[:, None] == offs_v[None, :]) & (offs_v[None, :] < V)
+        tl.store(neg_correct_logit_ptrs, -logits, mask=is_target)
     else:
         offs_b = (pid_b * BLOCK_B + tl.arange(0, BLOCK_B)).to(tl.int64)
 

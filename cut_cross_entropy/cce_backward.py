@@ -204,7 +204,7 @@ def _cce_backward_kernel(
             target_offs_b = offs_b
 
         targets = tl.load(Targets + target_offs_b, mask=target_offs_b < BMax, other=V + 1)
-        is_target = targets[:, None] == offs_v[None, :]
+        is_target = (targets[:, None] == offs_v[None, :]) & (offs_v[None, :] < V)
         d_accum += tl.where(is_target, -1.0, 0.0)
     else:
         is_target = None
